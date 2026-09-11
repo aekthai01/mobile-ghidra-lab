@@ -153,6 +153,7 @@ jobs:
               -scriptPath "$GITHUB_WORKSPACE/ghidra_scripts" \
               -analysisTimeoutPerFile 2400 \
               -postScript ExportAnalysis.java "$OUT" 12000 2700 10 \
+              -postScript ExportIdaListing.java "$OUT" \
               -deleteProject \
               > "$OUT/ghidra_headless.log" 2>&1
             GHIDRA_RC=$?
@@ -202,7 +203,7 @@ jobs:
               'run_attempt': os.environ.get('GITHUB_RUN_ATTEMPT'),
               'commit': os.environ.get('GITHUB_SHA'),
               'ghidra_version': os.environ.get('GHIDRA_VERSION'),
-              'profile': 'deep',
+              'profile': 'deep+ida-like',
               'results': entries,
           }
           root.mkdir(exist_ok=True)
@@ -233,10 +234,18 @@ jobs:
                   echo
                   sed -n '1,90p' "${d}deep_report.md"
                 fi
+                if [[ -f "${d}IDA_LIKE_README.md" ]]; then
+                  echo
+                  echo '### IDA-like ARM64 export'
+                  echo
+                  echo '- `ida_like_full.asm`: full listing with bytes, labels, xrefs, symbolic call/jump targets.'
+                  echo '- `ida_like_functions/`: one assembly file per recovered function.'
+                  echo '- `ida_call_xrefs.csv`: caller/callee call index.'
+                fi
                 echo
               done
             fi
-            echo 'Download the artifact for complete pseudocode, xrefs, call graph, rankings, and focused function files.'
+            echo 'Download the artifact for complete pseudocode, xrefs, call graph, rankings, focused function files, and IDA-like listings.'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload analysis artifact
