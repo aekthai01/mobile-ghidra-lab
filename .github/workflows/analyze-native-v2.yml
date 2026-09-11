@@ -5,7 +5,7 @@ on:
     paths:
       - 'input/**/*.so'
       - 'ghidra_scripts/**'
-      - 'tools/deep_report.py'
+      - 'tools/*.py'
       - '.github/workflows/analyze-native-v2.yml'
   workflow_dispatch:
     inputs:
@@ -123,33 +123,52 @@ jobs:
             printf '%s\n' "$TARGET" > "$OUT/source_path.txt"
             printf '%s\n' "$SHA256" > "$OUT/sha256.txt"
 
-            file "$TARGET" > "$OUT/file.txt" 2>&1 || true
-            readelf -h "$TARGET" > "$OUT/readelf_header.txt" 2>&1 || true
-            readelf -lW "$TARGET" > "$OUT/readelf_segments.txt" 2>&1 || true
-            readelf -SW "$TARGET" > "$OUT/readelf_sections.txt" 2>&1 || true
-            readelf -dW "$TARGET" > "$OUT/readelf_dynamic.txt" 2>&1 || true
-            readelf -rW "$TARGET" > "$OUT/readelf_relocations.txt" 2>&1 || true
-            readelf -sW "$TARGET" > "$OUT/readelf_symbols.txt" 2>&1 || true
-            readelf -nW "$TARGET" > "$OUT/readelf_notes.txt" 2>&1 || true
-            readelf -VW "$TARGET" > "$OUT/readelf_versions.txt" 2>&1 || true
-            nm -D -C "$TARGET" > "$OUT/nm_dynamic_all.txt" 2>&1 || true
-            nm -D -C --defined-only "$TARGET" > "$OUT/exports.txt" 2>&1 || true
-            nm -D -C --undefined-only "$TARGET" > "$OUT/imports.txt" 2>&1 || true
-            objdump -p "$TARGET" > "$OUT/objdump_private_headers.txt" 2>&1 || true
-            objdump -T -C "$TARGET" > "$OUT/objdump_dynamic_symbols.txt" 2>&1 || true
-            objdump -d -C "$TARGET" > "$OUT/objdump_disassembly.txt" 2>&1 || true
-            strings -a -n 4 "$TARGET" > "$OUT/raw_strings.txt" 2>&1 || true
+            python "$GITHUB_WORKSPACE/tools/preflight_obfuscation.py" "$TARGET" "$OUT" \
+              > "$OUT/preflight_obfuscation.log" 2>&1 || true
+
+            ANALYZE_TARGET="$(head -n 1 "$OUT/analysis_target.txt" 2>/dev/null || true)"
+            if [[ -z "$ANALYZE_TARGET" || ! -f "$ANALYZE_TARGET" ]]; then
+              printf 'preflight-only: input is not a directly analyzable ELF; see preflight_obfuscation.md\n' > "$OUT/status.txt"
+              printf 'not-run\n' > "$OUT/ghidra_exit_code.txt"
+              echo "No static ELF target recovered; keeping preflight evidence only."
+              echo '::endgroup::'
+              continue
+            fi
+
+            if [[ "$ANALYZE_TARGET" = /* ]]; then
+              IMPORT_TARGET="$ANALYZE_TARGET"
+            else
+              IMPORT_TARGET="$GITHUB_WORKSPACE/$ANALYZE_TARGET"
+            fi
+            printf '%s\n' "$IMPORT_TARGET" > "$OUT/analysis_target_used.txt"
+
+            file "$IMPORT_TARGET" > "$OUT/file.txt" 2>&1 || true
+            readelf -h "$IMPORT_TARGET" > "$OUT/readelf_header.txt" 2>&1 || true
+            readelf -lW "$IMPORT_TARGET" > "$OUT/readelf_segments.txt" 2>&1 || true
+            readelf -SW "$IMPORT_TARGET" > "$OUT/readelf_sections.txt" 2>&1 || true
+            readelf -dW "$IMPORT_TARGET" > "$OUT/readelf_dynamic.txt" 2>&1 || true
+            readelf -rW "$IMPORT_TARGET" > "$OUT/readelf_relocations.txt" 2>&1 || true
+            readelf -sW "$IMPORT_TARGET" > "$OUT/readelf_symbols.txt" 2>&1 || true
+            readelf -nW "$IMPORT_TARGET" > "$OUT/readelf_notes.txt" 2>&1 || true
+            readelf -VW "$IMPORT_TARGET" > "$OUT/readelf_versions.txt" 2>&1 || true
+            nm -D -C "$IMPORT_TARGET" > "$OUT/nm_dynamic_all.txt" 2>&1 || true
+            nm -D -C --defined-only "$IMPORT_TARGET" > "$OUT/exports.txt" 2>&1 || true
+            nm -D -C --undefined-only "$IMPORT_TARGET" > "$OUT/imports.txt" 2>&1 || true
+            objdump -p "$IMPORT_TARGET" > "$OUT/objdump_private_headers.txt" 2>&1 || true
+            objdump -T -C "$IMPORT_TARGET" > "$OUT/objdump_dynamic_symbols.txt" 2>&1 || true
+            objdump -d -C "$IMPORT_TARGET" > "$OUT/objdump_disassembly.txt" 2>&1 || true
+            strings -a -n 4 "$IMPORT_TARGET" > "$OUT/raw_strings.txt" 2>&1 || true
             grep -Eai '(https?://|wss?://|[A-Za-z0-9.-]+\.(com|net|org|io|gg|app|dev)|JNI|RegisterNatives|AES|RSA|SHA[0-9]*|MD5|encrypt|decrypt|token|auth|login|password|socket|ssl|tls|certificate|debug|error|audio|voice|xhook|ptrace|frida|dlopen|dlsym)' \
               "$OUT/raw_strings.txt" > "$OUT/interesting_strings.txt" || true
 
-            python "$GITHUB_WORKSPACE/tools/elf_report.py" "$TARGET" "$OUT/elf_metadata.json" \
+            python "$GITHUB_WORKSPACE/tools/elf_report.py" "$IMPORT_TARGET" "$OUT/elf_metadata.json" \
               > "$OUT/elf_report.log" 2>&1 || true
 
             PROJECT_NAME="deep_${SHORT_SHA}_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
             set +e
             "$GHIDRA_HOME/support/analyzeHeadless" \
               "$RUNNER_TEMP/ghidra-projects" "$PROJECT_NAME" \
-              -import "$GITHUB_WORKSPACE/$TARGET" \
+              -import "$IMPORT_TARGET" \
               -scriptPath "$GITHUB_WORKSPACE/ghidra_scripts" \
               -analysisTimeoutPerFile 2400 \
               -postScript ExportAnalysis.java "$OUT" 12000 2700 10 \
@@ -168,6 +187,8 @@ jobs:
 
             python "$GITHUB_WORKSPACE/tools/deep_report.py" "$OUT" \
               > "$OUT/deep_report.log" 2>&1 || true
+            python "$GITHUB_WORKSPACE/tools/arm64_obfuscation_report.py" "$OUT" \
+              > "$OUT/arm64_obfuscation_report.log" 2>&1 || true
 
             echo "Ghidra exit code: $GHIDRA_RC"
             echo "Output: $OUT"
@@ -203,7 +224,7 @@ jobs:
               'run_attempt': os.environ.get('GITHUB_RUN_ATTEMPT'),
               'commit': os.environ.get('GITHUB_SHA'),
               'ghidra_version': os.environ.get('GHIDRA_VERSION'),
-              'profile': 'deep+ida-like',
+              'profile': 'deep+ida-like+packing-preflight+arm64-cfg',
               'results': entries,
           }
           root.mkdir(exist_ok=True)
@@ -224,6 +245,12 @@ jobs:
                 [[ -d "$d" ]] || continue
                 echo "## $(basename "$d")"
                 [[ -f "${d}status.txt" ]] && echo "- Status: \`$(cat "${d}status.txt")\`"
+                if [[ -f "${d}preflight_obfuscation.md" ]]; then
+                  echo
+                  echo '### Packing / encryption preflight'
+                  echo
+                  sed -n '1,45p' "${d}preflight_obfuscation.md"
+                fi
                 if [[ -f "${d}analysis_summary.md" ]]; then
                   echo
                   cat "${d}analysis_summary.md"
@@ -234,6 +261,12 @@ jobs:
                   echo
                   sed -n '1,90p' "${d}deep_report.md"
                 fi
+                if [[ -f "${d}arm64_obfuscation_report.md" ]]; then
+                  echo
+                  echo '### ARM64 obstruction / huge-function triage'
+                  echo
+                  sed -n '1,45p' "${d}arm64_obfuscation_report.md"
+                fi
                 if [[ -f "${d}IDA_LIKE_README.md" ]]; then
                   echo
                   echo '### IDA-like ARM64 export'
@@ -241,11 +274,12 @@ jobs:
                   echo '- `ida_like_full.asm`: full listing with bytes, labels, xrefs, symbolic call/jump targets.'
                   echo '- `ida_like_functions/`: one assembly file per recovered function.'
                   echo '- `ida_call_xrefs.csv`: caller/callee call index.'
+                  echo '- `arm64_cfg_focus/`: top complex functions split into basic blocks with predecessor/successor hints.'
                 fi
                 echo
               done
             fi
-            echo 'Download the artifact for complete pseudocode, xrefs, call graph, rankings, focused function files, and IDA-like listings.'
+            echo 'Download the artifact for complete pseudocode, xrefs, call graph, packing clues, ARM64 complexity metrics, focused CFG files, and IDA-like listings.'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload analysis artifact
