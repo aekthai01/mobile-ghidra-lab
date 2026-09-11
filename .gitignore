@@ -1,0 +1,6 @@
+output/
+*.gpr
+*.rep/
+.ghidra-cache/
+__pycache__/
+*.pyc
