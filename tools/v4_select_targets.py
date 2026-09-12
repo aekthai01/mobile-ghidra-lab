@@ -56,9 +56,11 @@ starts.sort()
 start_to_entry = {r['_start_int']: r['_entry'] for r in func_by_entry.values()}
 
 DEFAULT = re.compile(r'(?i)^(?:FUN|SUB|LAB|thunk_FUN)_[0-9a-f]+$')
-SEED = re.compile(r'(?i)(^Java_|^JNI_OnLoad$|^JNI_OnUnload$|RegisterNatives|Weave|Callback|native[_:]|android[_:])')
+# Keep seeds narrow. Generic words like "callback" or "native" occur thousands of times in
+# OpenSSL/framework code and caused V4.0 to mistake library plumbing for app entry points.
+SEED = re.compile(r'(?i)(^Java_|^JNI_OnLoad$|^JNI_OnUnload$|RegisterNatives|Weave|gvraudio)')
 FAMILIES = [
-    ('openssl_boringssl', re.compile(r'(?i)^(?:SSL_|TLS_|X509_|ASN1_|EVP_|BIO_|PEM_|RSA_|DSA_|DH_|EC_|ECDSA_|ECDH_|BN_|HMAC_|SHA(?:1|224|256|384|512)?_|MD5_|CRYPTO_|OPENSSL_|ERR_|OBJ_|PKCS\d*_|CMS_|OCSP_|RAND_|CONF_|ENGINE_)')),
+    ('openssl_boringssl', re.compile(r'(?i)^(?:SSL_|SSL3_|TLS_|TLS1_|DTLS_|DTLS1_|X509_|ASN1_|EVP_|BIO_|PEM_|RSA_|DSA_|DH_|EC_|ECDSA_|ECDH_|BN_|HMAC_|SHA(?:1|224|256|384|512)?_|MD5_|CRYPTO_|OPENSSL_|OSSL_|ERR_|OBJ_|PKCS\d*_|CMS_|OCSP_|RAND_|CONF_|ENGINE_)')),
     ('libcxx', re.compile(r'(?i)(?:^std::|^__cxx|^__gnu_cxx|^__cxa_|^operator (?:new|delete)|basic_string|basic_ostream|basic_istream|std::__|std::)')),
     ('zlib', re.compile(r'(?i)^(?:inflate|deflate|crc32|adler32|compress2?|uncompress|gz(?:open|read|write|close)|zlibVersion)')),
     ('xhook', re.compile(r'(?i)(?:^xhook_|com_qiyi_xhook|NativeHandler_)')),
@@ -80,7 +82,6 @@ def family_for(name):
     return ''
 
 
-# Build directed call graph and bidirectional distance from app/JNI roots.
 callees = defaultdict(set)
 callers = defaultdict(set)
 for edge in callgraph:
@@ -96,13 +97,13 @@ for e, r in func_by_entry.items():
     if SEED.search(name):
         seeds.add(e)
 
-# If stripped code exposes few explicit JNI symbols, preserve named non-default entry points as weak roots.
-if len(seeds) < 3:
+# Fallback only when a stripped target exposes almost no JNI/app names. Avoid known library families.
+if len(seeds) < 2:
     for e, r in func_by_entry.items():
         name = r.get('name') or ''
         if name and not DEFAULT.match(name) and not family_for(name):
             seeds.add(e)
-            if len(seeds) >= 20:
+            if len(seeds) >= 12:
                 break
 
 distance = {}
@@ -119,7 +120,6 @@ while q:
     for n in callers.get(e, ()):
         q.append((n, d + 1))
 
-# Application-ish string references add weak evidence.
 entry_by_name = defaultdict(list)
 for e, r in func_by_entry.items():
     entry_by_name[r.get('name') or ''].append(e)
@@ -132,7 +132,6 @@ for row in string_xrefs:
     if re.search(r'(?i)(/data/|/sdcard/|android|package|callback|feature|title|login|token|auth|socket|http|jni|native)', value):
         for e in entry_by_name.get(name, ()): string_hits[e] += 1
 
-# Instruction-level metrics from the one-file inventory dump. This avoids producing 12k+ per-function files.
 metrics = defaultdict(lambda: {
     'instruction_count': 0, 'conditional_branches': 0, 'direct_branches': 0,
     'indirect_jumps': 0, 'indirect_calls': 0, 'calls': 0, 'returns': 0,
@@ -246,12 +245,11 @@ for e, r in func_by_entry.items():
         reasons.append(f'large:{size}')
     if third:
         penalty = 7000
-        if d is not None and d <= 1: penalty = 1200
-        elif d == 2: penalty = 3000
+        if d is not None and d <= 1: penalty = 1800
+        elif d == 2: penalty = 3500
         score -= penalty
         reasons.append(f'third_party:{family}')
 
-    # Whole-function decompilation becomes counterproductive on giant/flattened routines.
     region_mode = (
         size >= 12000 or m['instruction_count'] >= 3500 or est_blocks >= 280 or
         m['conditional_branches'] >= 160 or m['indirect_jumps'] >= 5 or state_hits >= 140
@@ -281,7 +279,6 @@ for e, r in func_by_entry.items():
 metric_rows.sort(key=lambda x: (-int(x['score']), x['entry']))
 selected_pool.sort(key=lambda x: (-int(x['score']), x['entry']))
 
-# Keep every explicit seed first, then the strongest remaining app/unknown functions.
 selected = []
 seen = set()
 for row in selected_pool:
@@ -292,7 +289,6 @@ for row in selected_pool:
     if row['entry'] in seen: continue
     selected.append(row); seen.add(row['entry'])
 
-# Prevent giant-region extraction from exploding artifact/runtime. Keep top 90 giant targets.
 region_seen = 0
 final = []
 for row in selected:
