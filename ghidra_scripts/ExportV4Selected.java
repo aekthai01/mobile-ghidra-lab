@@ -75,7 +75,7 @@ public class ExportV4Selected extends GhidraScript {
 
             for (Target t : targets) {
                 if (monitor.isCancelled()) break;
-                Address a = parseAddress(t.entry);
+                Address a = parseTargetAddress(t.entry);
                 Function f = a == null ? null : currentProgram.getFunctionManager().getFunctionAt(a);
                 if (f == null && a != null) f = currentProgram.getFunctionManager().getFunctionContaining(a);
                 if (f == null) {
@@ -303,7 +303,7 @@ public class ExportV4Selected extends GhidraScript {
         return new ArrayList<>(out);
     }
 
-    private Address parseAddress(String s) {
+    private Address parseTargetAddress(String s) {
         try {
             return currentProgram.getAddressFactory().getDefaultAddressSpace().getAddress(Long.parseUnsignedLong(s.trim(), 16));
         } catch (Exception e) {
