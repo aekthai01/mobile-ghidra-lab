@@ -54,7 +54,7 @@ public class ExportV5Pcode extends GhidraScript {
 
             for (Target t : targets) {
                 if (monitor.isCancelled() || totalOps >= maxOpsTotal) break;
-                Address a = parseAddress(t.entry);
+                Address a = parseEntryAddress(t.entry);
                 Function f = a == null ? null : currentProgram.getFunctionManager().getFunctionAt(a);
                 if (f == null && a != null) f = currentProgram.getFunctionManager().getFunctionContaining(a);
                 if (f == null) continue;
@@ -137,7 +137,7 @@ public class ExportV5Pcode extends GhidraScript {
         return out;
     }
 
-    private Address parseAddress(String s) {
+    private Address parseEntryAddress(String s) {
         try {
             return currentProgram.getAddressFactory().getDefaultAddressSpace().getAddress(Long.parseUnsignedLong(s.trim(), 16));
         } catch (Exception e) {
