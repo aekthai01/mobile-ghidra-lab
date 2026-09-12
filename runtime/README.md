@@ -46,7 +46,8 @@ Packed libraries can contain unreadable gaps, relocated pointers, anonymous exec
 2. Run `frida_dump_module.js` after the target library has been loaded/decrypted.
 3. Keep the generated manifest and range files together.
 4. Stitch/reconstruct the runtime image, then repair ELF metadata if necessary.
-5. Upload the repaired `.so` to `input/` and run **Analyze native library v3** again.
+5. Upload the repaired `.so` to `input/` and run **Analyze native library v5 flow recovery** again.
+6. Start from `ai_context/overview.md`, then use `v5_indirect_branches.csv`, `v5_jump_tables.csv`, and `v5_slices/` to correlate the recovered runtime code.
 
 This runtime stage is separate from GitHub Actions because a cloud runner cannot attach directly to an Android process on your phone.
 
