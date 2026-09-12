@@ -20,6 +20,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: mobile-ghidra-v4-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   discover:
     name: Select V4 targets
@@ -37,11 +41,9 @@ jobs:
           python - <<'PY'
           import json, os, subprocess
           from pathlib import Path
-
           event = os.environ.get('GITHUB_EVENT_NAME', '')
           manual = os.environ.get('MANUAL_TARGET', '').strip()
           targets = []
-
           if event == 'workflow_dispatch' and manual:
               p = Path(manual)
               if not str(p).startswith('input/') or p.suffix != '.so' or not p.is_file():
@@ -58,11 +60,9 @@ jobs:
                   changed = []
               targets = [p for p in changed if p.endswith('.so') and Path(p).is_file()]
               if not targets:
-                  # Pipeline/script change: stress-test only the largest current library.
                   libs = list(Path('input').rglob('*.so'))
                   if libs:
                       targets = [str(max(libs, key=lambda p: p.stat().st_size))]
-
           targets = sorted(dict.fromkeys(targets))
           if not targets:
               raise SystemExit('no .so targets found')
@@ -150,7 +150,6 @@ jobs:
           printf '%s\n' "$TARGET" > "$OUT/source_path.txt"
           printf '%s\n' "$SHA256" > "$OUT/sha256.txt"
 
-          # Stage 0: packing/encryption preflight.
           python tools/preflight_obfuscation.py "$TARGET" "$OUT" > "$OUT/preflight_obfuscation.log" 2>&1 || true
           ANALYZE_TARGET="$(head -n 1 "$OUT/analysis_target.txt" 2>/dev/null || true)"
           if [[ -z "$ANALYZE_TARGET" || ! -f "$ANALYZE_TARGET" ]]; then
@@ -161,7 +160,6 @@ jobs:
           if [[ "$ANALYZE_TARGET" = /* ]]; then IMPORT_TARGET="$ANALYZE_TARGET"; else IMPORT_TARGET="$GITHUB_WORKSPACE/$ANALYZE_TARGET"; fi
           printf '%s\n' "$IMPORT_TARGET" > "$OUT/analysis_target_used.txt"
 
-          # Stage 1: cheap independent ELF evidence.
           file "$IMPORT_TARGET" > "$OUT/file.txt" 2>&1 || true
           readelf -h "$IMPORT_TARGET" > "$OUT/readelf_header.txt" 2>&1 || true
           readelf -lW "$IMPORT_TARGET" > "$OUT/readelf_segments.txt" 2>&1 || true
@@ -174,7 +172,6 @@ jobs:
           strings -a -n 4 "$IMPORT_TARGET" > "$OUT/raw_strings.txt" 2>&1 || true
           python tools/elf_report.py "$IMPORT_TARGET" "$OUT/elf_metadata.json" > "$OUT/elf_report.log" 2>&1 || true
 
-          # Stage 2: one full Ghidra auto-analysis, but no mass decompilation and no 12k-file IDA dump.
           PROJECT_NAME="v4_${SHORT_SHA}_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}_${{ strategy.job-index }}"
           PROGRAM_NAME="$(basename "$IMPORT_TARGET")"
           set +e
@@ -187,16 +184,17 @@ jobs:
             > "$OUT/ghidra_inventory.log" 2>&1
           INV_RC=$?
           set -e
+          if [[ "$INV_RC" -eq 0 && ! -s "$OUT/functions.csv" ]]; then INV_RC=96; fi
+          if grep -Eqi 'SCRIPT ERROR|class could not be found|error:.*ExportAnalysis' "$OUT/ghidra_inventory.log"; then INV_RC=95; fi
           printf '%s\n' "$INV_RC" > "$OUT/ghidra_inventory_exit_code.txt"
           if [[ "$INV_RC" -ne 0 ]]; then
-            printf 'partial: inventory Ghidra exit code %s\n' "$INV_RC" > "$OUT/status.txt"
+            printf 'partial: inventory validation failed (%s)\n' "$INV_RC" > "$OUT/status.txt"
+            exit 21
           fi
 
-          # Stage 3: rank the whole binary before requesting expensive output.
           python tools/v4_select_targets.py "$OUT" > "$OUT/v4_select_targets.log" 2>&1
+          test -s "$OUT/v4_selected_functions.csv"
 
-          # Stage 4: reopen the already-analyzed project. Decompile only manageable high-value
-          # functions; giant/flattened routines are split into bounded evidence windows.
           set +e
           "$GHIDRA_HOME/support/analyzeHeadless" \
             "$RUNNER_TEMP/ghidra-projects" "$PROJECT_NAME" \
@@ -208,6 +206,8 @@ jobs:
             > "$OUT/ghidra_selected.log" 2>&1
           SEL_RC=$?
           set -e
+          if [[ "$SEL_RC" -eq 0 && ! -s "$OUT/v4_selected_export.csv" ]]; then SEL_RC=97; fi
+          if grep -Eqi 'SCRIPT ERROR|class could not be found|attempting to assign weaker access|error:.*ExportV4Selected' "$OUT/ghidra_selected.log"; then SEL_RC=98; fi
           printf '%s\n' "$SEL_RC" > "$OUT/ghidra_selected_exit_code.txt"
 
           python tools/v4_callgraph.py "$OUT" > "$OUT/v4_callgraph.log" 2>&1 || true
@@ -215,10 +215,11 @@ jobs:
             timeout 12s dot -Tsvg "$OUT/v4_selected_callgraph.dot" -o "$OUT/v4_selected_callgraph.svg" 2>"$OUT/v4_graphviz.log" || true
           fi
 
-          if [[ "$INV_RC" -eq 0 && "$SEL_RC" -eq 0 ]]; then
+          if [[ "$SEL_RC" -eq 0 ]]; then
             printf 'complete\n' > "$OUT/status.txt"
           else
-            printf 'partial: inventory=%s selected=%s\n' "$INV_RC" "$SEL_RC" > "$OUT/status.txt"
+            printf 'partial: selected exporter validation failed (%s)\n' "$SEL_RC" > "$OUT/status.txt"
+            exit 22
           fi
 
       - name: Publish V4 summary
@@ -237,7 +238,7 @@ jobs:
               [[ -f "${d}v4_triage.md" ]] && { echo; sed -n '1,80p' "${d}v4_triage.md"; }
               [[ -f "${d}v4_graph_report.md" ]] && { echo; cat "${d}v4_graph_report.md"; }
               echo
-              echo 'V4 key outputs: `v4_selected_functions.csv`, `v4_function_metrics.csv`, `v4_selected_ida/`, `v4_decompiled_selected/`, `v4_giant_regions/`, `v4_giant_region_index.csv`, `v4_selected_callgraph.svg`.'
+              echo 'V4 key outputs: `v4_selected_functions.csv`, `v4_function_metrics.csv`, `v4_selected_export.csv`, `v4_selected_ida/`, `v4_decompiled_selected/`, `v4_giant_regions/`, `v4_giant_region_index.csv`, `v4_selected_callgraph.svg`.'
             done
           } >> "$GITHUB_STEP_SUMMARY"
 
