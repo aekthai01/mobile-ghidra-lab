@@ -23,6 +23,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: mobile-ghidra-v5-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   discover:
     name: Select V5 targets
@@ -226,6 +230,17 @@ jobs:
           test -s "$OUT/v5_indirect_branches.csv"
           test -s "$OUT/v5_flow_report.json"
 
+          # A table-shaped ARM64 sequence is not automatically a recovered table. Validate decoded
+          # targets against actual 4-byte-aligned Ghidra instruction addresses before claiming it.
+          python tools/v5_validate_tables.py "$OUT" > "$OUT/v5_validate_tables.log" 2>&1
+          test -s "$OUT/v5_jump_table_validation.csv"
+          test -s "$OUT/v5_jump_table_validation.json"
+
+          # Backward-slice raw P-code at computed branches. This makes register/value construction
+          # readable even when static table bytes were encrypted or initialized only at runtime.
+          python tools/v5_pcode_slices.py "$OUT" > "$OUT/v5_pcode_slices.log" 2>&1
+          test -s "$OUT/v5_pcode_indirect_slices.csv"
+
           python tools/v4_callgraph.py "$OUT" > "$OUT/v5_callgraph.log" 2>&1 || true
           if [[ -f "$OUT/v4_selected_callgraph.dot" ]]; then
             cp "$OUT/v4_selected_callgraph.dot" "$OUT/v5_selected_callgraph.dot"
@@ -250,10 +265,12 @@ jobs:
               [[ -f "${d}status.txt" ]] && echo "- Status: \`$(cat "${d}status.txt")\`"
               [[ -f "${d}preflight_obfuscation.md" ]] && { echo; sed -n '1,28p' "${d}preflight_obfuscation.md"; }
               [[ -f "${d}v5_selection_report.md" ]] && { echo; sed -n '1,45p' "${d}v5_selection_report.md"; }
-              [[ -f "${d}v5_flow_report.md" ]] && { echo; sed -n '1,70p' "${d}v5_flow_report.md"; }
-              [[ -f "${d}v5_pcode_report.md" ]] && { echo; sed -n '1,35p' "${d}v5_pcode_report.md"; }
+              [[ -f "${d}v5_flow_report.md" ]] && { echo; sed -n '1,55p' "${d}v5_flow_report.md"; }
+              [[ -f "${d}v5_jump_table_validation.md" ]] && { echo; sed -n '1,45p' "${d}v5_jump_table_validation.md"; }
+              [[ -f "${d}v5_pcode_report.md" ]] && { echo; sed -n '1,30p' "${d}v5_pcode_report.md"; }
+              [[ -f "${d}v5_pcode_slices_report.md" ]] && { echo; sed -n '1,35p' "${d}v5_pcode_slices_report.md"; }
               echo
-              echo 'V5 key outputs: `v5_selected_functions.csv`, `v5_indirect_branches.csv`, `v5_jump_tables.csv`, `v5_state_values.csv`, `v5_clean_edges.csv`, `v5_slices/`, `v5_pcode.csv`, and `ai_context/overview.md`.'
+              echo 'V5 key outputs: `ai_context/overview.md`, `v5_jump_table_validation.csv`, `v5_runtime_table_candidates.csv`, `v5_pcode_indirect_slices.csv`, `v5_state_values.csv`, `v5_clean_edges.csv`, `v5_slices/`, and `v5_pcode.csv`.'
             done
           } >> "$GITHUB_STEP_SUMMARY"
 
