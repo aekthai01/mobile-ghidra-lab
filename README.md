@@ -9,65 +9,63 @@ Phone-first native Android reverse-engineering lab. Upload a `.so` from your pho
 3. Tap **Add file → Upload files**.
 4. Upload a library such as `libcstatic.so` or `libgvraudio.so`.
 5. Commit to `main`.
-6. Open **Actions → Analyze native library v4 selective**.
+6. Open **Actions → Analyze native library v5 flow recovery**.
 7. Wait for the run to finish.
-8. Download the `ghidra-v4-...` artifact for that target.
+8. Download the `ghidra-v5-...` artifact for that target.
 
 The repository is private. Keep non-public binaries private and analyze only software you own or are authorized to inspect.
 
-## Why V4 exists
+## V5 architecture
 
-V3 proved that “analyze everything deeply” is a bad strategy for hostile native libraries. A 100 KB ARM64 function with thousands of blocks can make decompilers time out, and feeding a multi-thousand-node CFG to Graphviz can waste most of a runner session after Ghidra itself already finished.
+V5 keeps V4's selective analysis and adds control-flow recovery instead of merely reporting that a function is horrible.
 
-V4 changes the pipeline to **inventory → rank → selectively deepen**:
+1. **Packing/encryption preflight** validates ELF structure, measures entropy, and conservatively attempts simple whole-file XOR recovery.
+2. **Independent ELF evidence** exports headers, segments, sections, symbols, imports, exports, relocations, strings, and pyelftools metadata.
+3. **One full Ghidra inventory pass** discovers functions, symbols, strings/xrefs, call graph, and disassembly without mass-decompiling every function.
+4. **Selective ranking** reuses the proven V4 ranker to prioritize JNI/app paths while suppressing obvious bundled OpenSSL/libc++/zlib/xhook noise.
+5. **Selective assembly/decompile** keeps normal high-value functions readable while giant/flattened functions stay in bounded region mode.
+6. **Raw Ghidra P-code** exports architecture-normalized operations for top functions so ARM64 register/value flow can be correlated without trusting text disassembly alone.
+7. **ARM64 indirect-branch recovery** recognizes common `ADRP + ADD + LDRSW + ADD + BR` relative jump-table dispatch and reads table entries directly from the ELF when the evidence is valid.
+8. **State/dispatcher analysis** records state-register comparisons, high-fan-in dispatcher candidates, resolved computed edges, and conservative trampoline collapse.
+9. **Semantic slices** create bounded ARM64 windows around computed branches and dispatcher-like blocks instead of throwing a 100 KB function at a decompiler and hoping for spiritual intervention.
+10. **AI context pack** produces small per-function cards for Agora/MT MCP/ChatGPT so a phone client can start with the important evidence rather than ingesting the entire artifact.
 
-1. **Packing/encryption preflight** — validates ELF structure, measures entropy and conservatively attempts simple whole-file XOR recovery.
-2. **Independent ELF evidence** — `readelf`, `nm`, strings and pyelftools metadata.
-3. **One full Ghidra auto-analysis** — discovers functions, symbols, strings/xrefs, call graph and one-file disassembly, but mass pseudocode export is disabled.
-4. **Whole-binary triage** — `v4_select_targets.py` ranks functions using JNI/app proximity, strings, indirect flow, compare/state patterns, size and conservative third-party signatures.
-5. **Two analysis modes**:
-   - `full` for manageable high-value functions: selective IDA-like assembly + Ghidra pseudocode.
-   - `region` for giant/flattened functions: no whole-function decompile; bounded windows are extracted around entry, indirect jumps/calls, high-indegree blocks, state-compare samples and periodic coverage points.
-6. **Bounded visualization** — only a capped selected-function call graph is rendered. Graphviz is also wrapped in a hard timeout so visualization cannot hold the workflow hostage.
-7. **Per-library matrix jobs** — multiple uploaded `.so` files can be analyzed in parallel instead of one enormous sequential job.
+When pipeline code changes without a new `.so`, V5 stress-tests the largest current library. When a `.so` is uploaded, only the changed library is selected. A manual run with a blank target analyzes every library under `input/`.
 
-When pipeline code changes without a new `.so`, V4 automatically stress-tests the largest current library. When a `.so` is uploaded, only the changed library is selected. A manual run with a blank target analyzes every library under `input/`.
+## Start with these V5 files
 
-## Start with these V4 files
+Do not begin by opening the full disassembly unless scrolling is the actual research objective.
 
-Do not begin with a 70 MB disassembly unless your thumb has offended you personally.
+- `ai_context/overview.md` — best phone/AI starting point
+- `v5_selected_functions.csv` — ranked targets and `full` vs `region` mode
+- `v5_flow_report.md` — control-flow recovery summary
+- `v5_indirect_branches.csv` — every recovered ARM64 computed branch and its evidence
+- `v5_jump_tables.csv` — decoded table entries for conservatively recognized relative jump tables
+- `v5_state_values.csv` — state-register/constant comparisons and nearby conditional targets
+- `v5_clean_edges.csv` — CFG edges after only safe trivial-branch collapse
+- `v5_slices/` — semantic ARM64 slices around indirect flow and dispatcher candidates
+- `v5_pcode.csv` / `v5_pcode_summary.csv` — bounded raw Ghidra P-code evidence
+- `v4_selected_ida/` and `v4_decompiled_selected/` — V4 selective exporter retained as a compatibility layer inside the V5 artifact
+- `functions.csv`, `callgraph.csv`, `strings.csv`, `string_xrefs.csv` — complete inventory evidence
 
-- `v4_triage.md` — short explanation of what V4 selected and why
-- `v4_selected_functions.csv` — authoritative target list with `full` vs `region` mode
-- `v4_function_metrics.csv` — whole-binary ARM64 metrics and ranking evidence
-- `v4_selected_export.csv` — what the second Ghidra pass actually exported/decompiled
-- `v4_selected_ida/` — readable IDA-like ARM64 listings for manageable selected functions
-- `v4_decompiled_selected/` — focused Ghidra pseudocode, one file per selected function
-- `v4_giant_regions/` — bounded evidence windows for giant/flattened functions
-- `v4_giant_region_index.csv` — region center, reason, range and file path
-- `v4_selected_callgraph.svg` — capped phone-friendly selected call graph
-- `callgraph.csv`, `functions.csv`, `strings.csv`, `string_xrefs.csv` — complete inventory evidence
+## What V5 can and cannot claim
 
-## Giant / flattened ARM64 functions
+A decoded jump-table entry is only emitted after the table address can be derived from the ARM64 sequence and the table bytes can be mapped back into the ELF. Resolved targets are additionally checked against executable load segments. Other indirect branches remain explicitly marked unresolved.
 
-V4 deliberately does **not** treat a 20–100 KB flattened function like an ordinary function. Whole-function decompilation can spend seconds or minutes building an expression tree that is mostly dispatcher noise and still return nothing useful.
+`v5_clean_edges.csv` collapses only trivial unconditional branch trampolines. V5 does not rewrite the binary, invent missing branches, or claim that a heuristic dispatcher is proven obfuscation. Generated parsers, crypto/state machines, and compiler output can be ugly without deliberate protection.
 
-Region mode instead keeps the original runtime addresses and extracts small windows around high-value control-flow evidence. This makes it practical to follow `BR Xn`, jump tables, dispatcher candidates, JNI paths and suspicious state comparisons without exporting thousands of per-function files.
+Raw P-code is Ghidra's instruction-level intermediate representation. It is useful for architecture-normalized data-flow evidence, but it is not SSA/high P-code and it is not the original C/C++ source.
 
-This is triage/deobfuscation assistance, not proof that a function is obfuscated. Large generated parsers, crypto code and state machines can look hostile without deliberate protection.
+## Packed / runtime-encrypted libraries
 
-## Packed / encrypted libraries
-
-Static analysis has limits. The preflight can detect suspicious structure/entropy and recover conservative simple whole-file XOR wrappers, but custom ciphers or code decrypted only after launch may require a runtime dump.
-
-See `runtime/README.md` and `runtime/frida_dump_module.js`. A cloud runner cannot attach directly to an Android process on your phone. Once a decrypted/repaired `.so` is obtained, upload it to `input/` and run V4 again.
+Static analysis still has limits. If real code is decrypted only after launch, use the prepared Android runtime path under `runtime/`. Dump the already-decrypted memory ranges, reconstruct/repair the ELF as needed, upload the repaired `.so` to `input/`, then run V5 again.
 
 ## Manual run
 
-Open **Actions → Analyze native library v4 selective → Run workflow**. Leave the target blank to analyze every `.so` under `input/`, or enter a path such as:
+Open **Actions → Analyze native library v5 flow recovery → Run workflow**. Leave the target blank to analyze every `.so` under `input/`, or enter a path such as:
 
 `input/libcstatic.so`
 
 ## Limits
 
-Decompiler output is reconstructed pseudocode, not original C/C++ source. Stripped symbols, types and comments may be permanently absent. Function ranking, third-party classification, state-register hints and region selection are heuristics. They prioritize evidence; they do not magically recover original source or defeat every VM/packer.
+Decompiler output is reconstructed pseudocode, not original source. Stripped names, types, comments, runtime-only keys, VM bytecode semantics, and dynamically generated code may require additional runtime evidence. Ranking, dispatcher scoring, and state-register hints are triage signals, not proof by themselves.
