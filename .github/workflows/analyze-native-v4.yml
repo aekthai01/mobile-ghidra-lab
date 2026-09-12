@@ -1,0 +1,252 @@
+name: Analyze native library v4 selective
+
+on:
+  push:
+    paths:
+      - 'input/**/*.so'
+      - 'ghidra_scripts/ExportAnalysis.java'
+      - 'ghidra_scripts/ExportV4Selected.java'
+      - 'tools/v4_*.py'
+      - 'tools/preflight_obfuscation.py'
+      - 'tools/elf_report.py'
+      - '.github/workflows/analyze-native-v4.yml'
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Optional .so path under input/. Blank = all libraries.'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  discover:
+    name: Select V4 targets
+    runs-on: ubuntu-24.04
+    outputs:
+      targets: ${{ steps.targets.outputs.targets }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+      - id: targets
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+
+          event = os.environ.get('GITHUB_EVENT_NAME', '')
+          manual = os.environ.get('MANUAL_TARGET', '').strip()
+          targets = []
+
+          if event == 'workflow_dispatch' and manual:
+              p = Path(manual)
+              if not str(p).startswith('input/') or p.suffix != '.so' or not p.is_file():
+                  raise SystemExit(f'invalid target: {manual}')
+              targets = [str(p)]
+          elif event == 'workflow_dispatch':
+              targets = [str(p) for p in sorted(Path('input').rglob('*.so'))]
+          else:
+              try:
+                  changed = subprocess.check_output([
+                      'git','diff','--name-only','--diff-filter=AM','HEAD^','HEAD','--','input'
+                  ], text=True).splitlines()
+              except Exception:
+                  changed = []
+              targets = [p for p in changed if p.endswith('.so') and Path(p).is_file()]
+              if not targets:
+                  # Pipeline/script change: stress-test only the largest current library.
+                  libs = list(Path('input').rglob('*.so'))
+                  if libs:
+                      targets = [str(max(libs, key=lambda p: p.stat().st_size))]
+
+          targets = sorted(dict.fromkeys(targets))
+          if not targets:
+              raise SystemExit('no .so targets found')
+          print('V4 targets:', *targets, sep='\n- ')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as f:
+              f.write('targets=' + json.dumps(targets, separators=(',', ':')) + '\n')
+          PY
+        env:
+          MANUAL_TARGET: ${{ inputs.target || '' }}
+
+  analyze:
+    name: V4 ${{ matrix.target }}
+    needs: discover
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        target: ${{ fromJson(needs.discover.outputs.targets) }}
+
+    env:
+      GHIDRA_VERSION: '12.1.3'
+      GHIDRA_ZIP: 'ghidra_12.1.3_PUBLIC_20260817.zip'
+      GHIDRA_SHA256: '93a5d11a9ad510622acaaf908c556a7b9b764d338e78a7567f3689bf5081fd54'
+      GHIDRA_URL: 'https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_12.1.3_build/ghidra_12.1.3_PUBLIC_20260817.zip'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install analysis dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends binutils file unzip graphviz
+          python -m pip install --disable-pip-version-check pyelftools
+
+      - name: Cache Ghidra
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/mobile-ghidra/${{ env.GHIDRA_ZIP }}
+          key: ghidra-${{ runner.os }}-${{ env.GHIDRA_VERSION }}-${{ env.GHIDRA_SHA256 }}
+
+      - name: Download and verify Ghidra
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.cache/mobile-ghidra" "$RUNNER_TEMP/ghidra"
+          ZIP="$HOME/.cache/mobile-ghidra/$GHIDRA_ZIP"
+          if [[ ! -f "$ZIP" ]]; then
+            curl --fail --location --retry 3 --retry-delay 2 "$GHIDRA_URL" -o "$ZIP"
+          fi
+          echo "$GHIDRA_SHA256  $ZIP" | sha256sum --check -
+          unzip -q "$ZIP" -d "$RUNNER_TEMP/ghidra"
+          GHIDRA_HOME="$RUNNER_TEMP/ghidra/ghidra_${GHIDRA_VERSION}_PUBLIC"
+          test -x "$GHIDRA_HOME/support/analyzeHeadless"
+          echo "GHIDRA_HOME=$GHIDRA_HOME" >> "$GITHUB_ENV"
+
+      - name: V4 selective analysis
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          test -f "$TARGET"
+          mkdir -p output "$RUNNER_TEMP/ghidra-projects"
+
+          SHA256="$(sha256sum "$TARGET" | awk '{print $1}')"
+          SHORT_SHA="${SHA256:0:12}"
+          BASE="$(basename "$TARGET")"
+          SAFE_BASE="$(printf '%s' "$BASE" | tr -cs 'A-Za-z0-9._-' '_')"
+          OUT="$GITHUB_WORKSPACE/output/${SAFE_BASE}-${SHORT_SHA}"
+          mkdir -p "$OUT"
+          printf '%s\n' "$TARGET" > "$OUT/source_path.txt"
+          printf '%s\n' "$SHA256" > "$OUT/sha256.txt"
+
+          # Stage 0: packing/encryption preflight.
+          python tools/preflight_obfuscation.py "$TARGET" "$OUT" > "$OUT/preflight_obfuscation.log" 2>&1 || true
+          ANALYZE_TARGET="$(head -n 1 "$OUT/analysis_target.txt" 2>/dev/null || true)"
+          if [[ -z "$ANALYZE_TARGET" || ! -f "$ANALYZE_TARGET" ]]; then
+            printf 'preflight-only: no static ELF recovered\n' > "$OUT/status.txt"
+            printf 'not-run\n' > "$OUT/ghidra_inventory_exit_code.txt"
+            exit 0
+          fi
+          if [[ "$ANALYZE_TARGET" = /* ]]; then IMPORT_TARGET="$ANALYZE_TARGET"; else IMPORT_TARGET="$GITHUB_WORKSPACE/$ANALYZE_TARGET"; fi
+          printf '%s\n' "$IMPORT_TARGET" > "$OUT/analysis_target_used.txt"
+
+          # Stage 1: cheap independent ELF evidence.
+          file "$IMPORT_TARGET" > "$OUT/file.txt" 2>&1 || true
+          readelf -h "$IMPORT_TARGET" > "$OUT/readelf_header.txt" 2>&1 || true
+          readelf -lW "$IMPORT_TARGET" > "$OUT/readelf_segments.txt" 2>&1 || true
+          readelf -SW "$IMPORT_TARGET" > "$OUT/readelf_sections.txt" 2>&1 || true
+          readelf -dW "$IMPORT_TARGET" > "$OUT/readelf_dynamic.txt" 2>&1 || true
+          readelf -rW "$IMPORT_TARGET" > "$OUT/readelf_relocations.txt" 2>&1 || true
+          readelf -sW "$IMPORT_TARGET" > "$OUT/readelf_symbols.txt" 2>&1 || true
+          nm -D -C --defined-only "$IMPORT_TARGET" > "$OUT/exports.txt" 2>&1 || true
+          nm -D -C --undefined-only "$IMPORT_TARGET" > "$OUT/imports.txt" 2>&1 || true
+          strings -a -n 4 "$IMPORT_TARGET" > "$OUT/raw_strings.txt" 2>&1 || true
+          python tools/elf_report.py "$IMPORT_TARGET" "$OUT/elf_metadata.json" > "$OUT/elf_report.log" 2>&1 || true
+
+          # Stage 2: one full Ghidra auto-analysis, but no mass decompilation and no 12k-file IDA dump.
+          PROJECT_NAME="v4_${SHORT_SHA}_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}_${{ strategy.job-index }}"
+          PROGRAM_NAME="$(basename "$IMPORT_TARGET")"
+          set +e
+          "$GHIDRA_HOME/support/analyzeHeadless" \
+            "$RUNNER_TEMP/ghidra-projects" "$PROJECT_NAME" \
+            -import "$IMPORT_TARGET" \
+            -scriptPath "$GITHUB_WORKSPACE/ghidra_scripts" \
+            -analysisTimeoutPerFile 1800 \
+            -postScript ExportAnalysis.java "$OUT" 0 60 1 \
+            > "$OUT/ghidra_inventory.log" 2>&1
+          INV_RC=$?
+          set -e
+          printf '%s\n' "$INV_RC" > "$OUT/ghidra_inventory_exit_code.txt"
+          if [[ "$INV_RC" -ne 0 ]]; then
+            printf 'partial: inventory Ghidra exit code %s\n' "$INV_RC" > "$OUT/status.txt"
+          fi
+
+          # Stage 3: rank the whole binary before requesting expensive output.
+          python tools/v4_select_targets.py "$OUT" > "$OUT/v4_select_targets.log" 2>&1
+
+          # Stage 4: reopen the already-analyzed project. Decompile only manageable high-value
+          # functions; giant/flattened routines are split into bounded evidence windows.
+          set +e
+          "$GHIDRA_HOME/support/analyzeHeadless" \
+            "$RUNNER_TEMP/ghidra-projects" "$PROJECT_NAME" \
+            -process "$PROGRAM_NAME" \
+            -noanalysis \
+            -scriptPath "$GITHUB_WORKSPACE/ghidra_scripts" \
+            -postScript ExportV4Selected.java "$OUT" "$OUT/v4_selected_functions.csv" 900 7 \
+            -deleteProject \
+            > "$OUT/ghidra_selected.log" 2>&1
+          SEL_RC=$?
+          set -e
+          printf '%s\n' "$SEL_RC" > "$OUT/ghidra_selected_exit_code.txt"
+
+          python tools/v4_callgraph.py "$OUT" > "$OUT/v4_callgraph.log" 2>&1 || true
+          if [[ -f "$OUT/v4_selected_callgraph.dot" ]]; then
+            timeout 12s dot -Tsvg "$OUT/v4_selected_callgraph.dot" -o "$OUT/v4_selected_callgraph.svg" 2>"$OUT/v4_graphviz.log" || true
+          fi
+
+          if [[ "$INV_RC" -eq 0 && "$SEL_RC" -eq 0 ]]; then
+            printf 'complete\n' > "$OUT/status.txt"
+          else
+            printf 'partial: inventory=%s selected=%s\n' "$INV_RC" "$SEL_RC" > "$OUT/status.txt"
+          fi
+
+      - name: Publish V4 summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '# Mobile Ghidra Lab V4'
+            for d in output/*/; do
+              [[ -d "$d" ]] || continue
+              echo
+              echo "## $(basename "$d")"
+              [[ -f "${d}status.txt" ]] && echo "- Status: \`$(cat "${d}status.txt")\`"
+              [[ -f "${d}preflight_obfuscation.md" ]] && { echo; sed -n '1,35p' "${d}preflight_obfuscation.md"; }
+              [[ -f "${d}analysis_summary.md" ]] && { echo; sed -n '1,35p' "${d}analysis_summary.md"; }
+              [[ -f "${d}v4_triage.md" ]] && { echo; sed -n '1,80p' "${d}v4_triage.md"; }
+              [[ -f "${d}v4_graph_report.md" ]] && { echo; cat "${d}v4_graph_report.md"; }
+              echo
+              echo 'V4 key outputs: `v4_selected_functions.csv`, `v4_function_metrics.csv`, `v4_selected_ida/`, `v4_decompiled_selected/`, `v4_giant_regions/`, `v4_giant_region_index.csv`, `v4_selected_callgraph.svg`.'
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload V4 artifact
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: ghidra-v4-${{ strategy.job-index }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: output/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 9
