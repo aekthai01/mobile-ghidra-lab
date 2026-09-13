@@ -130,6 +130,12 @@ public class ExportV4Selected extends GhidraScript {
             decompiler.dispose();
         }
 
+        File protectedCsv = new File(outDir, "v52_protected_functions.csv");
+        if (protectedCsv.isFile() && protectedCsv.length() > 0) {
+            println("[v5.4] exporting full evidence for high-protection functions");
+            runScript("ExportV54ProtectedEvidence.java", new String[] { outDir.getAbsolutePath(), protectedCsv.getAbsolutePath() });
+        }
+
         println("[v4] selective export complete");
     }
 
