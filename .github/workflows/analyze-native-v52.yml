@@ -1,4 +1,4 @@
-name: Analyze native library v5.2 protection-aware
+name: Analyze native library v5.3 human-first
 on:
   push:
     paths:
@@ -17,7 +17,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: mobile-ghidra-v52-${{ github.ref }}
+  group: mobile-ghidra-v53-${{ github.ref }}
   cancel-in-progress: true
 jobs:
   analyze:
@@ -54,7 +54,7 @@ jobs:
           echo "$GHIDRA_SHA256  $ZIP" | sha256sum --check -
           unzip -q "$ZIP" -d "$RUNNER_TEMP/ghidra"
           echo "GHIDRA_HOME=$RUNNER_TEMP/ghidra/ghidra_${GHIDRA_VERSION}_PUBLIC" >> "$GITHUB_ENV"
-      - name: V5.2 deep analysis
+      - name: V5.3 deep analysis
         env:
           MANUAL_TARGET: ${{ inputs.target || '' }}
         run: |
@@ -72,7 +72,7 @@ jobs:
           [[ "$ANALYZE" = /* ]] && IMPORT="$ANALYZE" || IMPORT="$GITHUB_WORKSPACE/$ANALYZE"
           file "$IMPORT" > "$OUT/file.txt"; readelf -lW "$IMPORT" > "$OUT/readelf_segments.txt" || true; readelf -SW "$IMPORT" > "$OUT/readelf_sections.txt" || true
           strings -a -n 4 "$IMPORT" > "$OUT/raw_strings.txt" || true; python tools/elf_report.py "$IMPORT" "$OUT/elf_metadata.json" || true
-          PROJ="v52_${SHORT}_${GITHUB_RUN_ID}"; PROG="$(basename "$IMPORT")"
+          PROJ="v53_${SHORT}_${GITHUB_RUN_ID}"; PROG="$(basename "$IMPORT")"
           bash tools/v52_inventory.sh "$GHIDRA_HOME" "$RUNNER_TEMP/projects" "$PROJ" "$IMPORT" "$OUT"
           bash tools/v52_select.sh "$OUT"
           bash tools/v52_selected.sh "$GHIDRA_HOME" "$RUNNER_TEMP/projects" "$PROJ" "$PROG" "$OUT"
@@ -82,16 +82,28 @@ jobs:
         if: always()
         run: |
           for d in output/*/; do
-            echo '# Mobile Ghidra Lab V5.2' >> "$GITHUB_STEP_SUMMARY"
+            echo '# Mobile Ghidra Lab V5.3' >> "$GITHUB_STEP_SUMMARY"
             [[ -f "${d}status.txt" ]] && echo "- Status: $(cat "${d}status.txt")" >> "$GITHUB_STEP_SUMMARY"
-            for f in v52_priority.md v51_quality_report.md v52_indirect_expression_roles.md v52_protected_regions.md; do
+            for f in v52_priority.md v52_protected_coverage.md v51_quality_report.md v52_indirect_expression_roles.md v53_string_inline_report.md v53_human_pack_report.md; do
               [[ -f "${d}${f}" ]] && { echo >> "$GITHUB_STEP_SUMMARY"; sed -n '1,55p' "${d}${f}" >> "$GITHUB_STEP_SUMMARY"; }
             done
+            echo >> "$GITHUB_STEP_SUMMARY"
+            echo 'For a phone-friendly result, download the human artifact and open `START_HERE.html`. The forensic artifact keeps the full P-code/CSV/disassembly evidence.' >> "$GITHUB_STEP_SUMMARY"
           done
-      - uses: actions/upload-artifact@v6
+      - name: Upload human-first artifact
         if: always()
+        uses: actions/upload-artifact@v6
         with:
-          name: ghidra-v52-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ghidra-v53-human-${{ github.run_id }}-${{ github.run_attempt }}
+          path: output/*/human/
+          if-no-files-found: warn
+          retention-days: 7
+          compression-level: 9
+      - name: Upload forensic artifact
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: ghidra-v53-forensic-${{ github.run_id }}-${{ github.run_attempt }}
           path: output/
           if-no-files-found: error
           retention-days: 7
