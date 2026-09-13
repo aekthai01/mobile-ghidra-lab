@@ -182,8 +182,8 @@ jobs:
           "$GHIDRA_HOME/support/analyzeHeadless" "$RUNNER_TEMP/ghidra-projects" "$PROJECT_NAME" \
             -process "$PROGRAM_NAME" -noanalysis -scriptPath "$GITHUB_WORKSPACE/ghidra_scripts" \
             -postScript ExportV4Selected.java "$OUT" "$OUT/v51_selected_functions.csv" 1500 10 \
-            -postScript ExportV51RawPcode.java "$OUT" "$OUT/v51_selected_functions.csv" 200 7000 20000 1200000 \
-            -postScript ExportV51HighPcode.java "$OUT" "$OUT/v51_selected_functions.csv" 100 10 35000 800000 \
+            -postScript ExportV51RawPcode.java "$OUT" "$OUT/v51_selected_functions.csv" 220 8000 22000 1400000 \
+            -postScript ExportV51HighPcode.java "$OUT" "$OUT/v51_selected_functions.csv" 120 12 40000 1000000 \
             -deleteProject > "$OUT/ghidra_selected_v51.log" 2>&1
           SEL_RC=$?; set -e
           if [[ "$SEL_RC" -eq 0 && ! -s "$OUT/v4_selected_export.csv" ]]; then SEL_RC=97; fi
