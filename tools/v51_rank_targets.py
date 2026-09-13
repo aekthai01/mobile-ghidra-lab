@@ -88,8 +88,8 @@ callback = {e:d for e,d in callback_raw.items() if d > 0}
 callback_forward = bfs({e for e,d in callback.items() if d <= 2}, callees, 4) if callback else {}
 
 forward_weight = {0:30000,1:18000,2:9000,3:4500,4:2200,5:1000,6:400}
-callback_weight = {1:15000,2:8000,3:3500,4:1200}
-cbf_weight = {0:4000,1:6000,2:3000,3:1200,4:500}
+callback_weight = {1:19000,2:9000,3:4000,4:1500}
+cbf_weight = {0:5000,1:7000,2:3500,3:1500,4:600}
 reverse_weight = {0:0,1:900,2:350,3:100}
 
 ranked = []
@@ -121,20 +121,29 @@ for e,r in by_entry.items():
         score -= penalty
         reasons.append(f"v51_third_party_penalty:{family or 'known'}")
 
-    mode = r.get("recommended_mode") or "full"
     size = int(float(r.get("size_bytes") or 0))
-    if size <= 32 and e not in seeds and fname(r):
+    tiny_context = size <= 32 and e not in seeds and bool(fname(r))
+    if tiny_context:
         score -= 18000
         reasons.append("tiny_api_thunk")
 
     tier = "D"
-    if e in seeds: tier = "A-seed"
-    elif fd is not None and fd <= 1 and not third: tier = "A-forward"
-    elif cd is not None and cd <= 1 and not third: tier = "A-callback"
-    elif fd is not None and fd <= 3 and not third: tier = "B-forward"
-    elif cfd is not None and cfd <= 2 and not third: tier = "B-callback-flow"
-    elif not third and score >= 7000: tier = "C-interesting"
-    elif third: tier = "Z-third-party"
+    if tiny_context:
+        tier = "Y-api-context"
+    elif e in seeds:
+        tier = "A-seed"
+    elif cd is not None and cd <= 1 and not third:
+        tier = "A-callback"
+    elif fd is not None and fd <= 1 and not third:
+        tier = "A-forward"
+    elif cfd is not None and cfd <= 2 and not third:
+        tier = "B-callback-flow"
+    elif fd is not None and fd <= 3 and not third:
+        tier = "B-forward"
+    elif not third and score >= 7000:
+        tier = "C-interesting"
+    elif third:
+        tier = "Z-third-party"
 
     rr = dict(r)
     rr.update({
@@ -148,7 +157,7 @@ for e,r in by_entry.items():
     })
     ranked.append(rr)
 
-tier_order = {"A-seed":0,"A-forward":1,"A-callback":2,"B-forward":3,"B-callback-flow":4,"C-interesting":5,"D":6,"Z-third-party":7}
+tier_order = {"A-seed":0,"A-callback":1,"A-forward":2,"B-callback-flow":3,"B-forward":4,"C-interesting":5,"D":6,"Y-api-context":7,"Z-third-party":8}
 ranked.sort(key=lambda r:(tier_order.get(r["v51_priority_tier"],9), -int(r["v51_score"]), canon(r.get("entry"))))
 
 selected = []
@@ -160,6 +169,8 @@ for r in ranked:
     tier = r["v51_priority_tier"]
     score = int(r["v51_score"])
     keep = tier.startswith(("A-","B-")) or (not third and score >= 4500) or (third and score >= 12000)
+    if tier == "Y-api-context":
+        keep = score >= 5000
     if not keep: continue
     if score < 0 and not tier.startswith("A-"):
         continue
@@ -173,8 +184,9 @@ for r in ranked:
 
 selected.sort(key=lambda r:(
     tier_order.get(r["v51_priority_tier"],9),
+    -int(r["v51_score"]),
     1 if r.get("recommended_mode") == "region" else 0,
-    -int(r["v51_score"]), canon(r.get("entry"))
+    canon(r.get("entry"))
 ))
 
 fields = list(ranked[0].keys())
@@ -188,11 +200,12 @@ summary = {
     "callback_reachable": len(callback), "selected": len(selected),
     "selected_region": sum(1 for r in selected if r.get("recommended_mode")=="region"),
     "selected_third_party": sum(1 for r in selected if is_third(r)),
+    "tiny_api_context_selected": sum(1 for r in selected if r.get("v51_priority_tier")=="Y-api-context"),
 }
 (root/"v51_ranking.json").write_text(json.dumps(summary,indent=2),encoding="utf-8")
 with (root/"v51_ranking.md").open("w",encoding="utf-8") as w:
     w.write("# V5.1 directed execution-path ranking\n\n")
-    w.write("Forward calls, reverse callers and function-pointer/data-reference callback evidence are scored separately. Third-party JNI names are not automatically treated as app seeds.\n\n")
+    w.write("Forward calls, reverse callers and function-pointer/data-reference callback evidence are scored separately. Third-party JNI names are not automatically treated as app seeds, and tiny API thunks are kept as context instead of outranking real callback bodies.\n\n")
     for k,v in summary.items(): w.write(f"- {k.replace('_',' ').title()}: **{v}**\n")
     w.write("\n| # | Tier | Score | Entry | Mode | Function | Forward | Callback | Third-party |\n|---:|---|---:|---|---|---|---:|---:|---|\n")
     for i,r in enumerate(selected[:100],1):
