@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+OUT="$1"; IMPORT="$2"
+python tools/v5_arm64_flow.py "$OUT" "$IMPORT" > "$OUT/v5_flow.log"
+python tools/v5_validate_tables.py "$OUT" > "$OUT/v5_tables.log"
+python tools/v51_high_pcode_slices.py "$OUT" > "$OUT/v51_high_slices.log"
+python tools/v52_selector_labels.py "$OUT" > "$OUT/v52_selector_labels.log"
+python tools/v51_runtime_tables.py "$OUT" > "$OUT/v51_runtime_tables.log"
+python tools/v52_protected_regions.py "$OUT" > "$OUT/v52_protected_regions.log"
+python tools/v51_quality.py "$OUT" > "$OUT/v51_quality.log"
+python tools/v4_callgraph.py "$OUT" > "$OUT/v52_callgraph.log" || true
+python tools/v51_ai_context.py "$OUT" > "$OUT/v52_ai_context.log"
+test -s "$OUT/v52_indirect_expression_roles.csv"
+test -s "$OUT/v52_protected_region_index.csv"
