@@ -36,7 +36,7 @@ public class ExportV54ProtectedEvidence extends GhidraScript {
             sum.println("entry,name,priority,score,size_bytes,status,instructions,raw_pcode_ops,string_refs,calls,evidence_dir");
             for(Target t:targets){
                 if(monitor.isCancelled()) break;
-                Address a=parseAddress(t.entry);
+                Address a=parseHexAddress(t.entry);
                 Function f=a==null?null:currentProgram.getFunctionManager().getFunctionAt(a);
                 if(f==null&&a!=null) f=currentProgram.getFunctionManager().getFunctionContaining(a);
                 if(f==null){
@@ -155,7 +155,7 @@ public class ExportV54ProtectedEvidence extends GhidraScript {
     private String bytes(Instruction x){try{byte[]b=x.getBytes();StringBuilder s=new StringBuilder();for(int i=0;i<b.length;i++){if(i>0)s.append(' ');s.append(String.format("%02X",b[i]&255));}return s.toString();}catch(Exception e){return "??";}}
     private String varnode(Varnode v){return v==null?"":v.toString();}
     private String displayName(Function f){String n=f==null?"":f.getName();if(n==null||n.isEmpty()||n.startsWith("FUN_")||n.startsWith("LAB_")||n.startsWith("SUB_"))return "sub_"+canon(f.getEntryPoint());return n;}
-    private Address parseAddress(String s){try{return currentProgram.getAddressFactory().getDefaultAddressSpace().getAddress(Long.parseUnsignedLong(s.trim(),16));}catch(Exception e){return null;}}
+    private Address parseHexAddress(String s){try{return currentProgram.getAddressFactory().getDefaultAddressSpace().getAddress(Long.parseUnsignedLong(s.trim(),16));}catch(Exception e){return null;}}
     private String canon(Address a){return String.format("%08X",a.getOffset());}
     private String sanitize(String s){String x=(s==null?"function":s).replaceAll("[^A-Za-z0-9._-]+","_");return x.length()>80?x.substring(0,80):x;}
     private String upper(String s){return s==null?"":s.toUpperCase();}
