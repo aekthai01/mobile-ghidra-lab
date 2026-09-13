@@ -19,9 +19,14 @@ for r in prot:
  out.append({'entry':e,'name':r.get('name',''),'complexity_score':r.get('complexity_priority_score',''),'size_bytes':r.get('size_bytes',''),'raw_pcode_ops':a.get('pcode_ops',''),'raw_truncated':a.get('truncated','missing'),'raw_reason':a.get('truncate_reason',''),'high_status':h.get('status','missing'),'high_ops':h.get('high_pcode_ops',''),'high_truncated':h.get('truncated',''),'decompile_status':d.get('decompile_status',''),'mode':r.get('recommended_mode','')})
 fields=list(out[0].keys()) if out else ['entry']
 with (root/'v52_protected_coverage.csv').open('w',encoding='utf-8',newline='') as f:w=csv.DictWriter(f,fieldnames=fields);w.writeheader();w.writerows(out)
+missing_raw=[x for x in out if not x['raw_pcode_ops']]
+truncated_raw=[x for x in out if str(x['raw_truncated']).lower()=='true']
 with (root/'v52_protected_coverage.md').open('w',encoding='utf-8') as w:
- w.write('# V5.2 protected-function coverage\n\n')
- w.write(f'- High-complexity protected targets: **{len(out)}**\n- Raw P-code present: **{sum(bool(x["raw_pcode_ops"]) for x in out)}**\n- Raw P-code truncated: **{sum(str(x["raw_truncated"]).lower()=="true" for x in out)}**\n- High P-code available: **{sum(str(x["high_status"]).lower()=="ok" for x in out)}**\n\n')
+ w.write('# V5.4 protected-function coverage\n\n')
+ w.write(f'- High-complexity protected targets: **{len(out)}**\n- Raw P-code present: **{sum(bool(x["raw_pcode_ops"]) for x in out)}**\n- Raw P-code truncated: **{len(truncated_raw)}**\n- Raw P-code missing: **{len(missing_raw)}**\n- High P-code available: **{sum(str(x["high_status"]).lower()=="ok" for x in out)}**\n\n')
+ w.write('High P-code may legitimately fail on giant/obfuscated functions. Raw P-code is the preservation fallback and is therefore mandatory for every high-protection function.\n\n')
  w.write('| Entry | Function | Complexity | Raw ops | Raw cut | High status | High ops | Decompile |\n|---|---|---:|---:|---|---|---:|---|\n')
  for x in out:w.write(f"| `0x{x['entry']}` | `{x['name']}` | {x['complexity_score']} | {x['raw_pcode_ops']} | {x['raw_truncated']} | {x['high_status']} | {x['high_ops']} | {x['decompile_status']} |\n")
-print('protected coverage',len(out))
+print('protected coverage',len(out),'missing raw',len(missing_raw),'truncated raw',len(truncated_raw))
+if missing_raw or truncated_raw:
+ raise SystemExit('high-protection raw evidence incomplete: missing=%d truncated=%d'%(len(missing_raw),len(truncated_raw)))
