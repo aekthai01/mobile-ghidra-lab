@@ -24,10 +24,10 @@ public class ExportV51HighPcode extends GhidraScript {
         if (args.length < 2) throw new IllegalArgumentException("ExportV51HighPcode.java <outDir> <selectionCsv> [maxFunctions] [timeoutSec] [maxOpsPerFunction] [maxOpsTotal]");
         File outDir = new File(args[0]);
         File selection = new File(args[1]);
-        int maxFunctions = args.length >= 3 ? parseInt(args[2], 80) : 80;
-        int timeoutSec = args.length >= 4 ? parseInt(args[3], 8) : 8;
-        int maxOpsPerFunction = args.length >= 5 ? parseInt(args[4], 30000) : 30000;
-        int maxOpsTotal = args.length >= 6 ? parseInt(args[5], 600000) : 600000;
+        int maxFunctions = args.length >= 3 ? parseInt(args[2], 120) : 120;
+        int timeoutSec = args.length >= 4 ? parseInt(args[3], 12) : 12;
+        int maxOpsPerFunction = args.length >= 5 ? parseInt(args[4], 40000) : 40000;
+        int maxOpsTotal = args.length >= 6 ? parseInt(args[5], 1000000) : 1000000;
         outDir.mkdirs();
 
         List<Target> targets = readTargets(selection, maxFunctions);
@@ -40,16 +40,18 @@ public class ExportV51HighPcode extends GhidraScript {
         decomp.setSimplificationStyle("decompile");
         if (!decomp.openProgram(currentProgram)) throw new IllegalStateException("Decompiler could not open program");
 
-        int totalOps=0, exported=0, failed=0;
+        int totalOps=0, exported=0, failed=0, skipped=0;
         try (PrintWriter out=writer(new File(outDir,"v51_high_pcode.csv"));
              PrintWriter summary=writer(new File(outDir,"v51_high_pcode_summary.csv"))) {
             out.println("rank,function_entry,function_name,mode,tier,sequence_address,sequence_time,opcode,mnemonic,output,inputs");
             summary.println("rank,function_entry,function_name,mode,tier,size_bytes,status,high_pcode_ops,truncated");
             for (Target t: targets) {
                 if (monitor.isCancelled() || totalOps >= maxOpsTotal) break;
-                // Region-mode giants are handled by bounded raw P-code and ARM64 semantic slices.
-                if ("region".equalsIgnoreCase(t.mode) && t.size >= 12000) {
-                    summary.println(t.rank+","+csv(t.entry)+","+csv(t.name)+","+csv(t.mode)+","+csv(t.tier)+","+t.size+","+csv("skipped:giant_region")+",0,false");
+                // Only truly enormous routines are skipped. Region-mode functions below this size are
+                // attempted with a hard per-function timeout so valuable dispatcher SSA is recovered when possible.
+                if ("region".equalsIgnoreCase(t.mode) && t.size >= 80000) {
+                    skipped++;
+                    summary.println(t.rank+","+csv(t.entry)+","+csv(t.name)+","+csv(t.mode)+","+csv(t.tier)+","+t.size+","+csv("skipped:extreme_giant")+",0,false");
                     continue;
                 }
                 Address a=parseEntryAddress(t.entry);
@@ -81,11 +83,12 @@ public class ExportV51HighPcode extends GhidraScript {
             w.println("- Requested targets: **"+targets.size()+"**");
             w.println("- High-P-code functions exported: **"+exported+"**");
             w.println("- Failed/timeouts: **"+failed+"**");
+            w.println("- Extreme giants skipped: **"+skipped+"**");
             w.println("- Total high-P-code ops: **"+totalOps+"**");
             w.println("- Per-function op cap: **"+maxOpsPerFunction+"**");
             w.println("- Decompile timeout/function: **"+timeoutSec+" sec**");
         }
-        println("[v5.1] high p-code exported="+exported+" failed="+failed+" ops="+totalOps);
+        println("[v5.1] high p-code exported="+exported+" failed="+failed+" skipped="+skipped+" ops="+totalOps);
     }
 
     private List<Target> readTargets(File file,int max)throws Exception{
