@@ -36,7 +36,16 @@ Generated C-like output is **reconstruction, not original source code**. A heuri
 
 ## Main outputs
 
-Human artifact: `START_HERE.html`, `V55_RECONSTRUCTION.html`, `reconstructed_c/<function>/overview.c`, per-region C files, and optional `ida/import_mobile_ghidra.py`.
+The human artifact now guarantees complete selected-function coverage:
+
+- `OFFSET_LOOKUP.html`: paste an IDA/RVA offset such as `19C56C` or a Ghidra VA such as `g:29C56C`.
+- `OFFSET_MAP.txt` + `offset_pages/`: exact searchable mapping for every disassembled instruction using both address forms.
+- `FUNCTIONS_C.html` + `functions_c/`: one C/C-like view for every selected function. Ghidra decompile is preferred, protected giants use region reconstruction, and remaining decompiler failures use full-function Raw P-code fallback.
+- `asm_full/`: one full dual-address ARM64 listing for every selected function.
+- `V55_RECONSTRUCTION.html` + `reconstructed_c/`: semantic protected/giant region reconstruction.
+- `V55_CFG.html`, `V55_NATIVE_DATA.html`, and optional `ida/import_mobile_ghidra.py`.
+
+Ghidra and IDA can show different virtual addresses when Ghidra imports the ELF at a non-zero image base. Human views therefore display both **ELF/IDA RVA** and **Ghidra VA**. Users should not need to manually add or subtract the image base.
 
 Forensic artifact keeps full inventory/disassembly, call graph, exact string xrefs, ARM64 flow recovery, jump tables, Raw P-code, High P-code/SSA, protected-function evidence, region maps, and protected-evidence hashes.
 
@@ -53,13 +62,13 @@ There is one workflow and one shell orchestrator:
 - `.github/workflows/analyze-native-v55.yml`
 - `tools/run_v55_pipeline.sh`
 
-Important stages include `ExportAnalysis.java`, `ExportV4Selected.java`, `ExportV51Refs.java`, `ExportV51RawPcode.java`, `ExportV51HighPcode.java`, `ExportV54ProtectedEvidence.java`, `v5_arm64_flow.py`, `v54_protected_pack.py`, `v55_region_reconstruct.py`, and `v55_ida_pack.py`.
+Important stages include `ExportAnalysis.java`, `ExportV4Selected.java`, `ExportV51Refs.java`, `ExportV51RawPcode.java`, `ExportV51HighPcode.java`, `ExportV54ProtectedEvidence.java`, `v5_arm64_flow.py`, `v54_protected_pack.py`, `v55_region_reconstruct.py`, `v55_complete_views.py`, and `v55_ida_pack.py`.
 
 See `tools/README.md` for the active-stage map. Older version numbers in filenames do not automatically mean obsolete; V5.5 reuses proven stage algorithms intentionally.
 
 ## Stress targets
 
-`input/libcstatic.so` remains the main stress test. When present, V5.5 validates reconstructed regions for known giant/protected targets including `FUN_00267564`, `FUN_001D3CA4`, and `_INIT_2`.
+`input/libcstatic.so` remains the main stress test. When present, V5.5 validates reconstructed regions for known giant/protected targets including `FUN_00267564`, `FUN_001D3CA4`, and `_INIT_2`. It also validates that every selected function has full ARM64 and C/C-like human views.
 
 ## Runtime-encrypted libraries
 

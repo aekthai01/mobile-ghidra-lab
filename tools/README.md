@@ -16,7 +16,9 @@ P-code/quality/context: `v51_high_pcode_slices.py`, `v51_quality.py`, `v51_ai_co
 
 Human/preservation: `v53_enrich_asm.py`, `v53_human_pack.py`, `v54_protected_pack.py`.
 
-V5.5: `v55_region_reconstruct.py`, `v55_ida_pack.py`.
+V5.5 reconstruction/intelligence: `v55_cfg_metrics.py`, `v55_native_data.py`, `v55_region_reconstruct.py`, `v55_ida_pack.py`, `v55_complete_views.py`, `v55_human_finalize.py`, `v55_validate.py`.
+
+`v55_complete_views.py` closes the human-view coverage gap: every selected function receives one C/C-like file and one full ARM64 file, while all disassembled instructions receive dual ELF/IDA-RVA and Ghidra-VA address aliases. The human artifact includes `OFFSET_LOOKUP.html`, `OFFSET_MAP.txt`, `offset_pages/`, `FUNCTIONS_C.html`, `functions_c/`, and `asm_full/`.
 
 ELF/preflight: `preflight_obfuscation.py`, `elf_report.py`.
 
