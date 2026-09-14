@@ -1,71 +1,70 @@
-# Mobile Ghidra Lab
+# Mobile Ghidra Lab V5.5
 
-Phone-first native Android reverse-engineering lab. Upload a `.so` from your phone; GitHub Actions performs the heavy analysis with Ghidra Headless and supporting ELF/ARM64 tooling.
+Phone-first Android native reverse-engineering lab. Upload a `.so`; GitHub Actions runs Ghidra Headless plus ARM64/P-code analysis and produces a phone-friendly human artifact and a full forensic artifact.
+
+The primary engine is **Ghidra Headless**. **IDA Pro is optional** and is used only as an annotation/navigation surface through the generated IDAPython bridge.
+
+## V5.5 goal
+
+V5.5 removes the old "huge protected function = decompiler dead end" assumption.
+
+```text
+ARM64 / protected giant function
+        ↓
+CFG + indirect-flow + state evidence
+        ↓
+semantic region windows
+        ↓
+High P-code / SSA when available
+        ↓
+full preserved Raw P-code fallback
+        ↓
+confidence-tagged C-like region reconstruction
+        ↓
+overview.c + per-region C + IDA annotations
+```
+
+Generated C-like output is **reconstruction, not original source code**. A heuristic never becomes a fact merely because it looks tidy.
 
 ## Use from a phone
 
-1. Open this repository on GitHub.
-2. Open `input/`.
-3. Tap **Add file → Upload files**.
-4. Upload a library such as `libcstatic.so` or `libgvraudio.so`.
-5. Commit to `main`.
-6. Open **Actions → Analyze native library v5 flow recovery**.
-7. Wait for the run to finish.
-8. Download the `ghidra-v5-...` artifact for that target.
+1. Upload the target library under `input/`.
+2. Open **Actions → Analyze native library v5.5 reconstructed C**.
+3. Run the workflow, or let an upload trigger it.
+4. Download `ghidra-v55-human-...`.
+5. Open `START_HERE.html`.
 
-The repository is private. Keep non-public binaries private and analyze only software you own or are authorized to inspect.
+## Main outputs
 
-## V5 architecture
+Human artifact: `START_HERE.html`, `V55_RECONSTRUCTION.html`, `reconstructed_c/<function>/overview.c`, per-region C files, and optional `ida/import_mobile_ghidra.py`.
 
-V5 keeps V4's selective analysis and adds control-flow recovery instead of merely reporting that a function is horrible.
+Forensic artifact keeps full inventory/disassembly, call graph, exact string xrefs, ARM64 flow recovery, jump tables, Raw P-code, High P-code/SSA, protected-function evidence, region maps, and protected-evidence hashes.
 
-1. **Packing/encryption preflight** validates ELF structure, measures entropy, and conservatively attempts simple whole-file XOR recovery.
-2. **Independent ELF evidence** exports headers, segments, sections, symbols, imports, exports, relocations, strings, and pyelftools metadata.
-3. **One full Ghidra inventory pass** discovers functions, symbols, strings/xrefs, call graph, and disassembly without mass-decompiling every function.
-4. **Selective ranking** reuses the proven V4 ranker to prioritize JNI/app paths while suppressing obvious bundled OpenSSL/libc++/zlib/xhook noise.
-5. **Selective assembly/decompile** keeps normal high-value functions readable while giant/flattened functions stay in bounded region mode.
-6. **Raw Ghidra P-code** exports architecture-normalized operations for top functions so ARM64 register/value flow can be correlated without trusting text disassembly alone.
-7. **ARM64 indirect-branch recovery** recognizes common `ADRP + ADD + LDRSW + ADD + BR` relative jump-table dispatch and reads table entries directly from the ELF when the evidence is valid.
-8. **State/dispatcher analysis** records state-register comparisons, high-fan-in dispatcher candidates, resolved computed edges, and conservative trampoline collapse.
-9. **Semantic slices** create bounded ARM64 windows around computed branches and dispatcher-like blocks instead of throwing a 100 KB function at a decompiler and hoping for spiritual intervention.
-10. **AI context pack** produces small per-function cards for Agora/MT MCP/ChatGPT so a phone client can start with the important evidence rather than ingesting the entire artifact.
+For high-protection functions, V5.4 preservation remains mandatory. Missing/truncated required evidence fails the workflow.
 
-When pipeline code changes without a new `.so`, V5 stress-tests the largest current library. When a `.so` is uploaded, only the changed library is selected. A manual run with a blank target analyzes every library under `input/`.
+## IDA Pro interop
 
-## Start with these V5 files
+Open the same ELF in IDA Pro and run `human/ida/import_mobile_ghidra.py`. It imports confidence-tagged comments/regions and handles image-base differences. It does not patch bytes, create functions, or change function boundaries. Suggested renames are disabled by default.
 
-Do not begin by opening the full disassembly unless scrolling is the actual research objective.
+## Active entrypoints
 
-- `ai_context/overview.md` — best phone/AI starting point
-- `v5_selected_functions.csv` — ranked targets and `full` vs `region` mode
-- `v5_flow_report.md` — control-flow recovery summary
-- `v5_indirect_branches.csv` — every recovered ARM64 computed branch and its evidence
-- `v5_jump_tables.csv` — decoded table entries for conservatively recognized relative jump tables
-- `v5_state_values.csv` — state-register/constant comparisons and nearby conditional targets
-- `v5_clean_edges.csv` — CFG edges after only safe trivial-branch collapse
-- `v5_slices/` — semantic ARM64 slices around indirect flow and dispatcher candidates
-- `v5_pcode.csv` / `v5_pcode_summary.csv` — bounded raw Ghidra P-code evidence
-- `v4_selected_ida/` and `v4_decompiled_selected/` — V4 selective exporter retained as a compatibility layer inside the V5 artifact
-- `functions.csv`, `callgraph.csv`, `strings.csv`, `string_xrefs.csv` — complete inventory evidence
+There is one workflow and one shell orchestrator:
 
-## What V5 can and cannot claim
+- `.github/workflows/analyze-native-v55.yml`
+- `tools/run_v55_pipeline.sh`
 
-A decoded jump-table entry is only emitted after the table address can be derived from the ARM64 sequence and the table bytes can be mapped back into the ELF. Resolved targets are additionally checked against executable load segments. Other indirect branches remain explicitly marked unresolved.
+Important stages include `ExportAnalysis.java`, `ExportV4Selected.java`, `ExportV51Refs.java`, `ExportV51RawPcode.java`, `ExportV51HighPcode.java`, `ExportV54ProtectedEvidence.java`, `v5_arm64_flow.py`, `v54_protected_pack.py`, `v55_region_reconstruct.py`, and `v55_ida_pack.py`.
 
-`v5_clean_edges.csv` collapses only trivial unconditional branch trampolines. V5 does not rewrite the binary, invent missing branches, or claim that a heuristic dispatcher is proven obfuscation. Generated parsers, crypto/state machines, and compiler output can be ugly without deliberate protection.
+See `tools/README.md` for the active-stage map. Older version numbers in filenames do not automatically mean obsolete; V5.5 reuses proven stage algorithms intentionally.
 
-Raw P-code is Ghidra's instruction-level intermediate representation. It is useful for architecture-normalized data-flow evidence, but it is not SSA/high P-code and it is not the original C/C++ source.
+## Stress targets
 
-## Packed / runtime-encrypted libraries
+`input/libcstatic.so` remains the main stress test. When present, V5.5 validates reconstructed regions for known giant/protected targets including `FUN_00267564`, `FUN_001D3CA4`, and `_INIT_2`.
 
-Static analysis still has limits. If real code is decrypted only after launch, use the prepared Android runtime path under `runtime/`. Dump the already-decrypted memory ranges, reconstruct/repair the ELF as needed, upload the repaired `.so` to `input/`, then run V5 again.
+## Runtime-encrypted libraries
 
-## Manual run
+If real code exists only after runtime decryption, static analysis cannot invent it. Use the tooling under `runtime/` to dump/recover the decrypted module, upload the repaired `.so`, then run V5.5 again.
 
-Open **Actions → Analyze native library v5 flow recovery → Run workflow**. Leave the target blank to analyze every `.so` under `input/`, or enter a path such as:
+## Cleanup policy
 
-`input/libcstatic.so`
-
-## Limits
-
-Decompiler output is reconstructed pseudocode, not original source. Stripped names, types, comments, runtime-only keys, VM bytecode semantics, and dynamically generated code may require additional runtime evidence. Ranking, dispatcher scoring, and state-register hints are triage signals, not proof by themselves.
+Legacy duplicate workflows, obsolete wrapper scripts, the unused standalone IDA-like exporter, and superseded P-code/AI helper implementations were removed in V5.5. A file is deleted only when the active pipeline no longer depends on it.
