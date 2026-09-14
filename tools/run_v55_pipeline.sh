@@ -1,85 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
-if [[ $# -ne 5 ]]; then
-  echo "usage: run_v55_pipeline.sh <ghidra-home> <project-dir> <project-name> <import-elf> <output-dir>" >&2
-  exit 2
-fi
-
-GHIDRA_HOME="$1"
-PROJECT_DIR="$2"
-PROJECT_NAME="$3"
-IMPORT="$4"
-OUT="$5"
-REPO_ROOT="${GITHUB_WORKSPACE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-PROGRAM_NAME="$(basename "$IMPORT")"
-
-mkdir -p "$PROJECT_DIR" "$OUT"
-
+if [[ $# -ne 5 ]]; then echo "usage: run_v55_pipeline.sh <ghidra-home> <project-dir> <project-name> <import-elf> <output-dir>" >&2; exit 2; fi
+GHIDRA_HOME="$1"; PROJECT_DIR="$2"; PROJECT_NAME="$3"; IMPORT="$4"; OUT="$5"; REPO_ROOT="${GITHUB_WORKSPACE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"; PROGRAM_NAME="$(basename "$IMPORT")"; mkdir -p "$PROJECT_DIR" "$OUT"
 echo "[v5.5] inventory"
-"$GHIDRA_HOME/support/analyzeHeadless" "$PROJECT_DIR" "$PROJECT_NAME" -import "$IMPORT" \
-  -scriptPath "$REPO_ROOT/ghidra_scripts" -analysisTimeoutPerFile 2400 \
-  -postScript ExportAnalysis.java "$OUT" 0 90 1 \
-  -postScript ExportV51Refs.java "$OUT" > "$OUT/ghidra_inventory.log" 2>&1
-
-test -s "$OUT/functions.csv"
-test -s "$OUT/v51_function_refs.csv"
-
+"$GHIDRA_HOME/support/analyzeHeadless" "$PROJECT_DIR" "$PROJECT_NAME" -import "$IMPORT" -scriptPath "$REPO_ROOT/ghidra_scripts" -analysisTimeoutPerFile 2400 -postScript ExportAnalysis.java "$OUT" 0 90 1 -postScript ExportV51Refs.java "$OUT" > "$OUT/ghidra_inventory.log" 2>&1
+test -s "$OUT/functions.csv"; test -s "$OUT/v51_function_refs.csv"
 echo "[v5.5] selection/ranking"
-python "$REPO_ROOT/tools/v4_select_targets.py" "$OUT" > "$OUT/v4_select.log"
-python "$REPO_ROOT/tools/v51_rank_targets.py" "$OUT" > "$OUT/v51_rank.log"
-python "$REPO_ROOT/tools/priority_bias.py" "$OUT" > "$OUT/v52_complexity.log"
-python "$REPO_ROOT/tools/v52_reselect.py" "$OUT" > "$OUT/v52_reselect.log"
-
-test -s "$OUT/v52_selected_functions.csv"
-test -s "$OUT/v52_protected_functions.csv"
-cp "$OUT/v52_selected_functions.csv" "$OUT/v51_selected_functions.csv"
-cp "$OUT/v52_selected_functions.csv" "$OUT/v5_selected_functions.csv"
-cp "$OUT/v52_selected_functions.csv" "$OUT/v4_selected_functions.csv"
-
+python "$REPO_ROOT/tools/v4_select_targets.py" "$OUT" > "$OUT/v4_select.log"; python "$REPO_ROOT/tools/v51_rank_targets.py" "$OUT" > "$OUT/v51_rank.log"; python "$REPO_ROOT/tools/priority_bias.py" "$OUT" > "$OUT/v52_complexity.log"; python "$REPO_ROOT/tools/v52_reselect.py" "$OUT" > "$OUT/v52_reselect.log"
+test -s "$OUT/v52_selected_functions.csv"; test -s "$OUT/v52_protected_functions.csv"; cp "$OUT/v52_selected_functions.csv" "$OUT/v51_selected_functions.csv"; cp "$OUT/v52_selected_functions.csv" "$OUT/v5_selected_functions.csv"; cp "$OUT/v52_selected_functions.csv" "$OUT/v4_selected_functions.csv"
 echo "[v5.5] selective Ghidra export + protected preservation"
-"$GHIDRA_HOME/support/analyzeHeadless" "$PROJECT_DIR" "$PROJECT_NAME" -process "$PROGRAM_NAME" -noanalysis \
-  -scriptPath "$REPO_ROOT/ghidra_scripts" \
-  -postScript ExportV4Selected.java "$OUT" "$OUT/v52_selected_functions.csv" 1800 20 \
-  -postScript ExportV51RawPcode.java "$OUT" "$OUT/v52_selected_functions.csv" 420 40000 120000 6000000 \
-  -postScript ExportV51HighPcode.java "$OUT" "$OUT/v52_selected_functions.csv" 220 25 80000 2500000 \
-  -deleteProject > "$OUT/ghidra_selected.log" 2>&1
-
-test -s "$OUT/v4_selected_export.csv"
-test -s "$OUT/v51_raw_pcode.csv"
-test -s "$OUT/v51_high_pcode_summary.csv"
-test -s "$OUT/v54_protected_evidence_summary.csv"
-
+"$GHIDRA_HOME/support/analyzeHeadless" "$PROJECT_DIR" "$PROJECT_NAME" -process "$PROGRAM_NAME" -noanalysis -scriptPath "$REPO_ROOT/ghidra_scripts" -postScript ExportV4Selected.java "$OUT" "$OUT/v52_selected_functions.csv" 1800 20 -postScript ExportV51RawPcode.java "$OUT" "$OUT/v52_selected_functions.csv" 420 40000 120000 6000000 -postScript ExportV51HighPcode.java "$OUT" "$OUT/v52_selected_functions.csv" 220 25 80000 2500000 -deleteProject > "$OUT/ghidra_selected.log" 2>&1
+test -s "$OUT/v4_selected_export.csv"; test -s "$OUT/v51_raw_pcode.csv"; test -s "$OUT/v51_high_pcode_summary.csv"; test -s "$OUT/v54_protected_evidence_summary.csv"
 echo "[v5.5] control-flow and evidence enrichment"
-python "$REPO_ROOT/tools/v5_arm64_flow.py" "$OUT" "$IMPORT" > "$OUT/v5_flow.log"
-python "$REPO_ROOT/tools/v5_validate_tables.py" "$OUT" > "$OUT/v5_tables.log"
-python "$REPO_ROOT/tools/v51_high_pcode_slices.py" "$OUT" > "$OUT/v51_high_slices.log"
-python "$REPO_ROOT/tools/v52_selector_labels.py" "$OUT" > "$OUT/v52_selector_labels.log"
-python "$REPO_ROOT/tools/v51_runtime_tables.py" "$OUT" > "$OUT/v51_runtime_tables.log"
-python "$REPO_ROOT/tools/v52_protected_regions.py" "$OUT" > "$OUT/v52_protected_regions.log"
-python "$REPO_ROOT/tools/v52_coverage.py" "$OUT" > "$OUT/v52_coverage.log"
-python "$REPO_ROOT/tools/v51_quality.py" "$OUT" > "$OUT/v51_quality.log"
-python "$REPO_ROOT/tools/v4_callgraph.py" "$OUT" > "$OUT/v52_callgraph.log" || true
-python "$REPO_ROOT/tools/v51_ai_context.py" "$OUT" > "$OUT/v52_ai_context.log"
-python "$REPO_ROOT/tools/v53_enrich_asm.py" "$OUT" > "$OUT/v53_enrich_asm.log"
-python "$REPO_ROOT/tools/v53_human_pack.py" "$OUT" > "$OUT/v53_human_pack.log"
-
+python "$REPO_ROOT/tools/v5_arm64_flow.py" "$OUT" "$IMPORT" > "$OUT/v5_flow.log"; python "$REPO_ROOT/tools/v5_validate_tables.py" "$OUT" > "$OUT/v5_tables.log"; python "$REPO_ROOT/tools/v51_high_pcode_slices.py" "$OUT" > "$OUT/v51_high_slices.log"; python "$REPO_ROOT/tools/v52_selector_labels.py" "$OUT" > "$OUT/v52_selector_labels.log"; python "$REPO_ROOT/tools/v51_runtime_tables.py" "$OUT" > "$OUT/v51_runtime_tables.log"; python "$REPO_ROOT/tools/v52_protected_regions.py" "$OUT" > "$OUT/v52_protected_regions.log"; python "$REPO_ROOT/tools/v55_cfg_metrics.py" "$OUT" > "$OUT/v55_cfg.log"; python "$REPO_ROOT/tools/v55_native_data.py" "$IMPORT" "$OUT" > "$OUT/v55_native_data.log"; python "$REPO_ROOT/tools/v52_coverage.py" "$OUT" > "$OUT/v52_coverage.log"; python "$REPO_ROOT/tools/v51_quality.py" "$OUT" > "$OUT/v51_quality.log"; python "$REPO_ROOT/tools/v4_callgraph.py" "$OUT" > "$OUT/v52_callgraph.log" || true; python "$REPO_ROOT/tools/v51_ai_context.py" "$OUT" > "$OUT/v52_ai_context.log"; python "$REPO_ROOT/tools/v53_enrich_asm.py" "$OUT" > "$OUT/v53_enrich_asm.log"; python "$REPO_ROOT/tools/v53_human_pack.py" "$OUT" > "$OUT/v53_human_pack.log"
 echo "[v5.5] lossless validation + reconstructed C + IDA interop"
-python "$REPO_ROOT/tools/v54_protected_pack.py" "$OUT" > "$OUT/v54_protected_pack.log"
-python "$REPO_ROOT/tools/v55_region_reconstruct.py" "$OUT" > "$OUT/v55_region_reconstruct.log"
-python "$REPO_ROOT/tools/v55_ida_pack.py" "$OUT" > "$OUT/v55_ida_pack.log"
-
-test -s "$OUT/v52_indirect_expression_roles.csv"
-test -s "$OUT/v52_protected_region_index.csv"
-test -s "$OUT/v52_protected_coverage.csv"
-test -s "$OUT/v53_string_inline_report.md"
-test -s "$OUT/v54_protected_manifest.json"
-test -s "$OUT/v55_region_map.csv"
-test -s "$OUT/v55_reconstruction_summary.csv"
-test -s "$OUT/v55_reconstruction_report.md"
-test -s "$OUT/v55_ida_interop_report.md"
-test -s "$OUT/human/START_HERE.html"
-test -s "$OUT/human/V55_RECONSTRUCTION.html"
-test -s "$OUT/human/ida/import_mobile_ghidra.py"
-
+python "$REPO_ROOT/tools/v54_protected_pack.py" "$OUT" > "$OUT/v54_protected_pack.log"; python "$REPO_ROOT/tools/v55_region_reconstruct.py" "$OUT" > "$OUT/v55_region_reconstruct.log"; python "$REPO_ROOT/tools/v55_ida_pack.py" "$OUT" > "$OUT/v55_ida_pack.log"; python "$REPO_ROOT/tools/v55_human_finalize.py" "$OUT" > "$OUT/v55_human_finalize.log"; python "$REPO_ROOT/tools/v55_validate.py" "$OUT" > "$OUT/v55_validate.log"
+test -s "$OUT/v54_protected_manifest.json"; test -s "$OUT/v55_region_map.csv"; test -s "$OUT/v55_reconstruction_summary.csv"; test -s "$OUT/v55_cfg_report.md"; test -s "$OUT/v55_native_data_report.md"; test -s "$OUT/v55_acceptance.md"; test -s "$OUT/human/START_HERE.html"; test -s "$OUT/human/V55_RECONSTRUCTION.html"; test -s "$OUT/human/V55_CFG.html"; test -s "$OUT/human/V55_NATIVE_DATA.html"; test -s "$OUT/human/ida/import_mobile_ghidra.py"
 echo "[v5.5] pipeline complete"
