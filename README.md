@@ -4,6 +4,21 @@ Phone-first Android native reverse-engineering lab. Upload a `.so`; GitHub Actio
 
 The primary engine is **Ghidra Headless**. **ARM64 is the ground truth** for control flow and instruction semantics. High/Raw P-code are supporting data-flow evidence. **IDA Pro is optional** and is used only as an annotation/navigation surface through the generated IDAPython bridge.
 
+## V5.5 AI-native semantic-C V3
+
+The analysis contract has four layers, deliberately separated so convenient output never quietly outranks machine-code evidence:
+
+1. `asm_full/` is immutable ARM64 ground truth.
+2. `semantic_c/` is the ARM64-grounded semantic core and preferred analysis view.
+3. `semantic_c_compact/` is the high-signal AI prompt view.
+4. `raw_ir` in the forensic artifact is the Raw P-code/SSA evidence vault.
+
+`functions_c/` is retained as legacy evidence-oriented raw P-code C-like context. It is **not** the preferred analysis view.
+
+Semantic provenance is explicit: **EXACT** for direct instruction/address/CFG facts, **STRONG** for deterministic ARM64/data-flow-backed lowering, and **HEURISTIC** for inference. A real symbol is never replaced by a heuristic name.
+
+V3 interprets SIMD/NEON modified immediates only after the architectural shift has produced the final lane bits. The regression `MOVI v1.2S,#0x41,LSL#24` therefore preserves raw bits `0x41000000` and yields `8.0f`, never the pre-shift denormal `9.10844001811131e-44f`. Raw bits remain visible, suspicious denormal splats are rejected globally, no-byte assembly listings remain parseable, DUP/vector evidence is retained, and strings containing `*/` are represented through a safe evidence literal.
+
 ## V5.5 goal
 
 V5.5 removes the old "huge protected function = decompiler dead end" assumption and avoids pretending that a raw P-code dump is good C.
@@ -19,14 +34,14 @@ High P-code / SSA when available + preserved Raw P-code fallback
         ↓
 ARM64-grounded basic-block reconstruction
         ↓
-evidence-backed idiom folding + call/string recovery
+V3 bit-exact semantic AI upgrade
         ↓
 semantic C (preferred human/AI analysis view)
         ↓
-legacy evidence C-like views + IDA annotations
+fatal V3 quality gate + semantic validation
 ```
 
-Generated semantic C is **reconstruction, not original source code**. Unsupported instructions stay explicit as `ARM64_*` instead of being guessed. A tidy-looking heuristic is never promoted to fact merely because it compiles in somebody's imagination.
+Generated semantic C is **reconstruction, not original source code**. Unsupported instructions stay explicit as `ARM64_*` instead of being guessed.
 
 ## Use from a phone
 
@@ -39,25 +54,17 @@ Generated semantic C is **reconstruction, not original source code**. Unsupporte
 
 ## Main outputs
 
-The human artifact guarantees complete selected-function coverage:
+- `V55_SEMANTIC_C.html` + `semantic_c/`: detailed ARM64-grounded semantic C.
+- `semantic_c_compact/`: high-signal AI prompt view.
+- `SEMANTIC_C_INDEX.csv`: semantic-C coverage and CFG/call statistics.
+- `asm_full/`: full dual-address immutable ARM64 evidence for every selected function.
+- `FUNCTIONS_C.html` + `functions_c/`: legacy evidence-oriented C-like context only.
+- `OFFSET_LOOKUP.html`, `OFFSET_MAP.txt`, `offset_pages/`: exact dual-address navigation.
+- `V55_RECONSTRUCTION.html`, `V55_CFG.html`, `V55_NATIVE_DATA.html`, and optional `ida/import_mobile_ghidra.py`.
 
-- `V55_SEMANTIC_C.html` + `semantic_c/`: detailed ARM64-grounded semantic C with exact basic-block/CFG provenance.
-- `semantic_c_compact/`: high-signal semantic view designed for human/AI analysis without raw P-code flag noise.
-- `SEMANTIC_C_INDEX.csv`: per-function semantic-C coverage, CFG block coverage, calls and folded idioms.
-- `OFFSET_LOOKUP.html`: paste an IDA/RVA offset such as `19C56C` or a Ghidra VA such as `g:29C56C`.
-- `OFFSET_MAP.txt` + `offset_pages/`: exact searchable mapping for every disassembled instruction using both address forms.
-- `asm_full/`: one full dual-address ARM64 listing for every selected function.
-- `FUNCTIONS_C.html` + `functions_c/`: legacy evidence-oriented C/C-like coverage. This remains useful forensic context but is no longer the preferred semantic view.
-- `V55_RECONSTRUCTION.html` + `reconstructed_c/`: protected/giant region reconstruction.
-- `V55_CFG.html`, `V55_NATIVE_DATA.html`, and optional `ida/import_mobile_ghidra.py`.
+Forensic output keeps full inventory/disassembly, call graph, exact string xrefs, ARM64 flow recovery, jump tables, Raw/High P-code and SSA, protected evidence, region maps, semantic-string recovery, and protected-evidence hashes.
 
-The semantic-C stage uses ARM64 branch instructions and CFG as authoritative structure, folds only recognized instruction idioms, preserves unsupported instructions explicitly, tracks observed AArch64 ABI arguments, and recovers exact/interior strings. It also scans the analyzed ELF directly for printable strings that Ghidra may not materialize as String objects.
-
-Ghidra and IDA can show different virtual addresses when Ghidra imports the ELF at a non-zero image base. Human views therefore display both **ELF/IDA RVA** and **Ghidra VA**. Users should not need to manually add or subtract the image base.
-
-Forensic artifact keeps full inventory/disassembly, call graph, exact string xrefs, ARM64 flow recovery, jump tables, Raw P-code, High P-code/SSA, protected-function evidence, region maps, semantic-string recovery, and protected-evidence hashes.
-
-For high-protection functions, V5.4 preservation remains mandatory. Missing/truncated required evidence fails the workflow. Semantic-C validation also fails if selected-function coverage or CFG-block coverage regresses, if known stress semantics disappear, or if raw P-code-noise tokens leak back into the semantic view.
+For high-protection functions, V5.4 preservation remains mandatory. Missing/truncated required evidence fails the workflow. V3 quality and semantic validation are fatal.
 
 ## IDA Pro interop
 
@@ -70,15 +77,11 @@ There is one workflow and one shell orchestrator:
 - `.github/workflows/analyze-native-v55.yml`
 - `tools/run_v55_pipeline.sh`
 
-Important stages include `ExportAnalysis.java`, `ExportV4Selected.java`, `ExportV51Refs.java`, `ExportV51RawPcode.java`, `ExportV51HighPcode.java`, `ExportV54ProtectedEvidence.java`, `v5_arm64_flow.py`, `v54_protected_pack.py`, `v55_region_reconstruct.py`, `v55_complete_views.py`, `v55_semantic_c.py`, `v55_semantic_validate.py`, and `v55_ida_pack.py`.
-
-See `tools/README.md` for the active-stage map. Older version numbers in filenames do not automatically mean obsolete; V5.5 reuses proven stage algorithms intentionally.
+The semantic chain is `v55_semantic_c.py` → `v55_semantic_ai_upgrade.py` → quality gates → `v55_semantic_validate.py` → `v55_human_finalize.py` → `v55_validate.py`. See `tools/README.md` for the complete active-stage map.
 
 ## Stress targets
 
-`input/libcstatic.so` remains the main stress test. When present, V5.5 validates reconstructed regions for known giant/protected targets including `FUN_00267564`, `FUN_001D3CA4`, and `_INIT_2`. It also validates that every selected function has full ARM64, complete evidence C/C-like views, and ARM64-grounded semantic C.
-
-The known `FUN_0029C094` stress path additionally checks semantic reconstruction around IDA/RVA `0x19C4E0`: signed divide-by-two idiom folding, visible branch structure, license/UI strings, interior Telegram string recovery, and direct ELF recovery of `"Exit"` when the ELF scanner is active.
+`input/libcstatic.so` remains the main stress test. The known `FUN_0029C094` path checks signed divide-by-two folding, visible branch structure, license/UI strings, interior Telegram recovery, `Exit`, bit-exact modified FP immediates and vector propagation.
 
 ## Runtime-encrypted libraries
 
