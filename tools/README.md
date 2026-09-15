@@ -16,9 +16,13 @@ P-code/quality/context: `v51_high_pcode_slices.py`, `v51_quality.py`, `v51_ai_co
 
 Human/preservation: `v53_enrich_asm.py`, `v53_human_pack.py`, `v54_protected_pack.py`.
 
-V5.5 reconstruction/intelligence: `v55_cfg_metrics.py`, `v55_native_data.py`, `v55_region_reconstruct.py`, `v55_ida_pack.py`, `v55_complete_views.py`, `v55_human_finalize.py`, `v55_validate.py`.
+V5.5 reconstruction/intelligence: `v55_cfg_metrics.py`, `v55_native_data.py`, `v55_region_reconstruct.py`, `v55_ida_pack.py`, `v55_complete_views.py`, `v55_semantic_c.py`, `v55_semantic_validate.py`, `v55_human_finalize.py`, `v55_validate.py`.
 
-`v55_complete_views.py` closes the human-view coverage gap: every selected function receives one C/C-like file and one full ARM64 file, while all disassembled instructions receive dual ELF/IDA-RVA and Ghidra-VA address aliases. The human artifact includes `OFFSET_LOOKUP.html`, `OFFSET_MAP.txt`, `offset_pages/`, `FUNCTIONS_C.html`, `functions_c/`, and `asm_full/`.
+`v55_complete_views.py` closes the human-view coverage gap: every selected function receives one evidence-oriented C/C-like file and one full ARM64 file, while all disassembled instructions receive dual ELF/IDA-RVA and Ghidra-VA address aliases. The human artifact includes `OFFSET_LOOKUP.html`, `OFFSET_MAP.txt`, `offset_pages/`, `FUNCTIONS_C.html`, `functions_c/`, and `asm_full/`.
+
+`v55_semantic_c.py` is the preferred analysis layer. It treats full ARM64 + CFG as authoritative, reconstructs code block-by-block, folds only evidence-backed ARM64 idioms, tracks observed AArch64 ABI arguments, handles common integer/SIMD/FP operations, recovers exact and interior strings, and optionally scans the analyzed ELF directly for printable strings missed by Ghidra. Instructions not safely lowered remain explicit `ARM64_*` statements instead of guessed C.
+
+`v55_semantic_validate.py` prevents green-but-useless regressions: it requires semantic-C coverage for every selected function, exact CFG-block coverage for functions with CFG, rejects raw P-code-noise tokens from semantic output, and checks known stress semantics including the `0x19C094` path.
 
 ELF/preflight: `preflight_obfuscation.py`, `elf_report.py`.
 
