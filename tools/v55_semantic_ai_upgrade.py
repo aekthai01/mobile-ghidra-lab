@@ -11,10 +11,11 @@ def parse_modified_imm(op):
     m=re.search(r'#(0x[0-9a-f]+|\d+)',op,re.I)
     if not m:return None
     imm=int(m.group(1),0)&0xff
-    sh=re.search(r'\bLSL\s*#?(\d+)',op,re.I); shift=int(sh.group(1)) if sh else 0
-    if shift not in (0,8,16,24):return None
-    bits=(imm<<shift)&0xffffffff
-    if re.search(r'\bMSL\b',op,re.I): bits|=(1<<shift)-1 if shift else 0
+    sh=re.search(r'\bLSL\s*#?(8|16|24)\b',op,re.I)
+    msl=re.search(r'\bMSL\s*#?(8|16|24)\b',op,re.I)
+    if not sh and not msl:return None
+    shift=int((sh or msl).group(1)); bits=(imm<<shift)&0xffffffff
+    if msl: bits|=(1<<shift)-1
     return bits
 ASM_RE=re.compile(r'^\.text:([0-9A-Fa-f]{16})\s+(?:(?:[0-9A-Fa-f]{2}\s+){4}\s*)?([A-Za-z0-9.]+)\s*(.*)$')
 mods={}; dup_sources={}
