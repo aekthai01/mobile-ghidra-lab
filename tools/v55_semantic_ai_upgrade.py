@@ -5,17 +5,14 @@ ARM64 remains immutable ground truth. This stage enriches generated semantic vie
 never renames real symbols heuristically, preserves exact evidence safely, and fixes
 AArch64 SIMD modified immediates using the final lane bits (after LSL/MSL).
 """
-import csv,json,re,struct,sys
+import json,re,struct,sys
 from pathlib import Path
 if len(sys.argv)!=2: raise SystemExit('usage: v55_semantic_ai_upgrade.py <analysis-output-dir>')
 root=Path(sys.argv[1]); human=root/'human'; detailed=human/'semantic_c'; compact=human/'semantic_c_compact'
 POLICY=' * Provenance/confidence: EXACT=ARM64/address/CFG fact; STRONG=deterministic lowering backed by ARM64; HEURISTIC=inference only. Real symbols are never replaced by heuristic names.\n'
 def f32(bits): return struct.unpack('>f',int(bits&0xffffffff).to_bytes(4,'big'))[0]
-def safe_evidence(s):
-    # JSON string is safe inside a C string literal even when evidence contains */.
-    return json.dumps(s,ensure_ascii=False)
+def safe_evidence(s): return json.dumps(s,ensure_ascii=False)
 def parse_modified_imm(op):
-    # MOVI/MVNI vector modified immediate. Return final 32-bit lane when syntax is explicit.
     m=re.search(r'#(0x[0-9a-f]+|\d+)',op,re.I)
     if not m:return None
     imm=int(m.group(1),0)&0xff
@@ -47,23 +44,23 @@ for folder in (detailed,compact):
             ma=re.search(r'IDA/RVA 0x([0-9A-Fa-f]+)',line); rva=int(ma.group(1),16) if ma else None; ga=(0x100000+rva) if rva is not None else None
             if ga in mods:
                 mn,op,bits=mods[ga]; val=f32(bits)
-                # Drop a pre-shift denormal literal on this instruction and append bit-exact evidence.
                 line=re.sub(r'(?<![\w.])-?\d+\.\d+e-\d+f',f'{val!r}f',line,flags=re.I)
                 evidence=f'ARM64 {mn} {op}; modified-imm raw_bits=0x{bits:08X}; f32={val!r}f; confidence=EXACT'
                 if evidence not in line: line+=' /* '+evidence+' */'
                 modified+=1
-            # Globally reject suspicious tiny float splats caused by interpreting pre-shift imm8 as f32.
             def denorm(m):
-                nonlocal_dummy=0
                 try:v=float(m.group(0)[:-1])
                 except:return m.group(0)
                 if 0<abs(v)<1.17549435e-38:return '0.0f /* V3 removed suspicious pre-shift denormal splat */'
                 return m.group(0)
             before=line; line=re.sub(r'-?\d+(?:\.\d+)?e-\d+f',denorm,line,flags=re.I)
             if line!=before:suspicious_removed+=1
-            # Evidence strings containing comment terminators must never be emitted raw inside comments.
-            if '*/' in line and ('recovered string' in line or 'STRING_XREF' in line):
-                payload=line.split('*/',1)[0]
+            # A normal recovered-string comment has one closing */. Only an additional
+            # terminator can have come from the evidence payload itself. Do not destroy
+            # ordinary string-xref lines merely because their comment closes normally.
+            if line.count('*/')>1 and ('recovered string' in line or 'STRING_XREF' in line):
+                first=line.find('*/'); last=line.rfind('*/')
+                payload=line[:last].strip()
                 line='  V55_EVIDENCE_LITERAL('+safe_evidence(payload)+'); /* confidence=EXACT; safe evidence literal */'
                 safe_literals+=1
             lines.append(line)
