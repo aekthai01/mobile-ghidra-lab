@@ -17,11 +17,13 @@ asm=list((human/'asm_full').glob('*.asm')) if (human/'asm_full').exists() else [
 if len(asm)!=len(selected):errors.append(f'ARM64 ground truth {len(asm)}/{len(selected)}')
 noise={k:len(re.findall(rx,joined)) for k,rx in {'int_carry':r'\bint_carry\s*\(','int_scarry':r'\bint_scarry\s*\(','bool_negate':r'\bbool_negate\s*\(','tmp_vars':r'\btmp_[A-Za-z0-9_]+\b','reg_pcode_vars':r'\breg_[0-9]+_[0-9]+\b','raw_call_mem':r'call\s*\(\s*mem_','raw_goto_mem':r'goto\s+mem_'}.items()}
 if any(noise.values()):errors.append('P-code noise '+json.dumps(noise,sort_keys=True))
-addr_lines={}
+addr_lines={};mod_evidence={}
 for t in comptxt:
  for line in t.splitlines():
   m=re.search(r'IDA/RVA 0x([0-9A-Fa-f]+)',line)
   if m:addr_lines.setdefault(int(m.group(1),16),[]).append(line)
+  e=re.search(r'V55_ARM64_MODIMM_EVIDENCE\(0x([0-9A-Fa-f]+),\s*0x([0-9A-Fa-f]{8}),',line)
+  if e and 'confidence=EXACT' in line:mod_evidence.setdefault(int(e.group(1),16),[]).append(line)
 BASE=0x100000;branch_total=branch_ok=call_total=call_ok=mod_total=mod_ok=0
 asm_re=re.compile(r'^\.text:[0-9A-Fa-f]{16}\s+(?:(?:[0-9A-Fa-f]{2}\s+){4}\s*)?([A-Za-z0-9.]+)\s*(.*)$',re.I)
 for p in asm:
@@ -39,9 +41,9 @@ for p in asm:
   elif mn=='BL':
    call_total+=1;tgt=op.split(',',1)[0].strip()
    if any((tgt+'(').lower() in q.lower() for q in ls):call_ok+=1
-  if mn in ('MOVI','MVNI') and re.search(r'\bLSL\s*#?(?:8|16|24)',op,re.I):
+  if mn in ('MOVI','MVNI') and re.search(r'\b(?:LSL|MSL)\s*#?(?:8|16|24)\b',op,re.I):
    mod_total+=1
-   if any('raw_bits=0x' in q and 'confidence=EXACT' in q for q in ls):mod_ok+=1
+   if mod_evidence.get(a):mod_ok+=1
 branch_pct=100*branch_ok/branch_total if branch_total else 100;call_pct=100*call_ok/call_total if call_total else 100
 if branch_pct<99.9:errors.append(f'direct branch targets {branch_ok}/{branch_total}={branch_pct:.3f}%')
 if call_pct<99.0:errors.append(f'direct calls {call_ok}/{call_total}={call_pct:.3f}%')
