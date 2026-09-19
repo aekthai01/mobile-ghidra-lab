@@ -279,7 +279,7 @@ public class ExportV56RegionC extends GhidraScript {
 
         Attempt out = new Attempt();
         out.ok = true;
-        out.strategy = "giant-presplit-" + GIANT_CHUNK_WINDOW + "-normalize";
+        out.strategy = "giant-presplit-" + GIANT_CHUNK_WINDOW + "-decompile";
         StringBuilder combined = new StringBuilder();
         HighFunction firstHigh = null;
 
@@ -300,7 +300,7 @@ public class ExportV56RegionC extends GhidraScript {
                 partId,
                 0,
                 giantTimeoutSec,
-                "normalize"
+                "decompile"
             );
             out.rangeAttempts += child.rangeAttempts;
             out.elapsedMs += child.elapsedMs;
