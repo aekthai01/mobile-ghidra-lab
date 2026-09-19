@@ -15,6 +15,7 @@ import ghidra.program.model.listing.InstructionIterator;
 import ghidra.program.model.pcode.HighFunction;
 import ghidra.program.model.pcode.PcodeOpAST;
 import ghidra.program.model.pcode.Varnode;
+import ghidra.program.model.scalar.Scalar;
 import ghidra.program.model.symbol.SourceType;
 
 import java.io.*;
@@ -23,7 +24,7 @@ import java.util.*;
 
 public class ExportV56RegionC extends GhidraScript {
     private static class Target { String entry, name, mode; int size, rank, loginBoost; }
-    private static class Region { String id, start, end, reason; }
+    private static class Region { String id, start, end, reason; int priority; }
 
     @Override
     protected void run() throws Exception {
@@ -78,10 +79,12 @@ public class ExportV56RegionC extends GhidraScript {
                 if (!wantsRegion && !needCFallback && !needPcodeRetry) continue;
                 targetCount++;
 
-                List<Region> regions = new ArrayList<>(regionMap.getOrDefault(key, Collections.emptyList()));
-                if (regions.isEmpty()) regions = synthesizeRegions(t);
+                // V5.6 must cover the complete function, not only V4's interesting-region samples.
+                // Seed-containing windows are processed first, then the remaining windows in address order.
+                List<Region> regions = synthesizeRegions(t);
+                if (regions.isEmpty()) regions = new ArrayList<>(regionMap.getOrDefault(key, Collections.emptyList()));
                 if (regions.isEmpty()) {
-                    index.println(csv(key)+","+csv(t.name)+",,,,,"+csv("no_regions")+",,0,"+csv("no region index and no executable instructions"));
+                    index.println(csv(key)+","+csv(t.name)+",,,,,"+csv("no_regions")+",,0,"+csv("no executable instructions for exhaustive coverage"));
                     continue;
                 }
 
@@ -89,6 +92,7 @@ public class ExportV56RegionC extends GhidraScript {
                 Address entry = parseMglAddress(key);
                 Function original = entry == null ? null : fm.getFunctionAt(entry);
                 if (original == null && entry != null) original = fm.getFunctionContaining(entry);
+                AddressSet originalBody = original == null ? null : new AddressSet(original.getBody());
                 if (original != null) {
                     try { fm.removeFunction(original.getEntryPoint()); } catch (Exception ignored) {}
                     decomp.flushCache();
@@ -114,43 +118,48 @@ public class ExportV56RegionC extends GhidraScript {
                     int retryOps = 0;
                     File cFile = new File(regionRoot, key + "_" + sanitize(r.id) + ".c");
                     try {
-                        AddressSet body = new AddressSet(lo, hi);
-                        temp = fm.createFunction("__mgl_v56_" + key + "_" + sanitize(r.id), lo, body, SourceType.ANALYSIS);
-                        decomp.flushCache();
-                        if (temp == null) {
-                            status = "create_function_failed";
+                        AddressSet bounds = new AddressSet(lo, hi);
+                        AddressSet body = originalBody == null ? bounds : originalBody.intersect(bounds);
+                        if (body.isEmpty()) {
+                            status = "empty_region_body";
                         } else {
-                            DecompileResults res = decomp.decompileFunction(temp, timeoutSec, monitor);
-                            HighFunction high = res == null ? null : res.getHighFunction();
-                            String c = (res != null && res.decompileCompleted() && res.getDecompiledFunction() != null) ? res.getDecompiledFunction().getC() : null;
-                            if (c != null && !c.trim().isEmpty()) {
-                                try (PrintWriter cw = writer(cFile)) {
-                                    cw.println("/* V5.6 region pseudocode reconstructed by Ghidra; not original source. */");
-                                    cw.println("/* parent=0x" + key + " region=" + r.id + " range=" + lo + ".." + hi + " reason=" + clean(r.reason) + " */");
-                                    cw.println(c);
-                                }
-                                status = "ok";
-                                cSuccess++;
+                            temp = fm.createFunction("__mgl_v56_" + key + "_" + sanitize(r.id), lo, body, SourceType.ANALYSIS);
+                            decomp.flushCache();
+                            if (temp == null) {
+                                status = "create_function_failed";
                             } else {
-                                status = "failed:" + clean(res == null ? "no_result" : res.getErrorMessage());
-                            }
-
-                            if (!retrySatisfied && high != null) {
-                                Iterator<PcodeOpAST> pit = high.getPcodeOps();
-                                while (pit != null && pit.hasNext() && !monitor.isCancelled() && retryOps < maxOpsPerRetryRegion) {
-                                    PcodeOpAST op = pit.next();
-                                    StringBuilder inputs = new StringBuilder();
-                                    for (int k=0;k<op.getNumInputs();k++) { if (k>0) inputs.append(" | "); inputs.append(varnode(op.getInput(k))); }
-                                    pcode.println(csv(key)+","+csv(t.name)+","+csv(r.id)+","+csv(r.start)+","+csv(r.end)+","+csv("v56-retry:"+r.reason)+","+
-                                        csv(op.getSeqnum().getTarget().toString())+","+op.getSeqnum().getTime()+","+op.getOpcode()+","+csv(op.getMnemonic())+","+csv(varnode(op.getOutput()))+","+csv(inputs.toString()));
-                                    retryOps++;
-                                }
-                                if (retryOps > 0) {
-                                    pcodeSummary.println(csv(key)+","+csv(t.name)+","+csv(r.id)+","+csv(r.start)+","+csv(r.end)+","+csv("v56-retry:"+r.reason)+","+csv("ok")+","+retryOps);
-                                    retrySatisfied = true;
-                                    retrySuccess++;
+                                DecompileResults res = decomp.decompileFunction(temp, timeoutSec, monitor);
+                                HighFunction high = res == null ? null : res.getHighFunction();
+                                String c = (res != null && res.decompileCompleted() && res.getDecompiledFunction() != null) ? res.getDecompiledFunction().getC() : null;
+                                if (c != null && !c.trim().isEmpty()) {
+                                    try (PrintWriter cw = writer(cFile)) {
+                                        cw.println("/* V5.6 region pseudocode reconstructed by Ghidra; not original source. */");
+                                        cw.println("/* parent=0x" + key + " region=" + r.id + " range=" + lo + ".." + hi + " reason=" + clean(r.reason) + " */");
+                                        cw.println(c);
+                                    }
+                                    status = "ok";
+                                    cSuccess++;
                                 } else {
-                                    pcodeSummary.println(csv(key)+","+csv(t.name)+","+csv(r.id)+","+csv(r.start)+","+csv(r.end)+","+csv("v56-retry:"+r.reason)+","+csv("failed:no_high_function")+",0");
+                                    status = "failed:" + clean(res == null ? "no_result" : res.getErrorMessage());
+                                }
+
+                                if (!retrySatisfied && high != null) {
+                                    Iterator<PcodeOpAST> pit = high.getPcodeOps();
+                                    while (pit != null && pit.hasNext() && !monitor.isCancelled() && retryOps < maxOpsPerRetryRegion) {
+                                        PcodeOpAST op = pit.next();
+                                        StringBuilder inputs = new StringBuilder();
+                                        for (int k=0;k<op.getNumInputs();k++) { if (k>0) inputs.append(" | "); inputs.append(varnode(op.getInput(k))); }
+                                        pcode.println(csv(key)+","+csv(t.name)+","+csv(r.id)+","+csv(r.start)+","+csv(r.end)+","+csv("v56-retry:"+r.reason)+","+
+                                            csv(op.getSeqnum().getTarget().toString())+","+op.getSeqnum().getTime()+","+op.getOpcode()+","+csv(op.getMnemonic())+","+csv(varnode(op.getOutput()))+","+csv(inputs.toString()));
+                                        retryOps++;
+                                    }
+                                    if (retryOps > 0) {
+                                        pcodeSummary.println(csv(key)+","+csv(t.name)+","+csv(r.id)+","+csv(r.start)+","+csv(r.end)+","+csv("v56-retry:"+r.reason)+","+csv("ok")+","+retryOps);
+                                        retrySatisfied = true;
+                                        retrySuccess++;
+                                    } else {
+                                        pcodeSummary.println(csv(key)+","+csv(t.name)+","+csv(r.id)+","+csv(r.start)+","+csv(r.end)+","+csv("v56-retry:"+r.reason)+","+csv("failed:no_high_function")+",0");
+                                    }
                                 }
                             }
                         }
@@ -170,32 +179,61 @@ public class ExportV56RegionC extends GhidraScript {
         } finally {
             decomp.dispose();
         }
-        println("[v5.6] region C targets="+targetCount+" attempts="+regionAttempts+" c_success="+cSuccess+" independent_pcode_retries="+retrySuccess);
+        println("[v5.6] exhaustive region C targets="+targetCount+" attempts="+regionAttempts+" c_success="+cSuccess+" independent_pcode_retries="+retrySuccess);
     }
 
     private List<Region> synthesizeRegions(Target t) {
         List<Region> out = new ArrayList<>();
         Address start = parseMglAddress(t.entry);
-        if (start == null || t.size <= 0) return out;
-        Address end;
-        try { end = start.add(Math.max(0, t.size - 1)); } catch (Exception e) { return out; }
-        AddressSet set = new AddressSet(start, end);
-        InstructionIterator it = currentProgram.getListing().getInstructions(set, true);
+        if (start == null) return out;
+
+        Function f = currentProgram.getFunctionManager().getFunctionAt(start);
+        if (f == null) f = currentProgram.getFunctionManager().getFunctionContaining(start);
+        AddressSet coverage;
+        if (f != null) {
+            coverage = new AddressSet(f.getBody());
+        } else {
+            if (t.size <= 0) return out;
+            Address end;
+            try { end = start.add(Math.max(0, t.size - 1)); } catch (Exception e) { return out; }
+            coverage = new AddressSet(start, end);
+        }
+
+        InstructionIterator it = currentProgram.getListing().getInstructions(coverage, true);
         List<Instruction> ins = new ArrayList<>();
         while (it.hasNext() && !monitor.isCancelled()) ins.add(it.next());
-        final int window = 140, step = 120;
+        if (ins.isEmpty()) return out;
+
+        // Overlap preserves local data/control-flow context while guaranteeing every instruction is covered.
+        final int window = 180, step = 160;
         int id = 0;
         for (int i=0; i<ins.size(); i+=step) {
             int hi = Math.min(ins.size()-1, i+window-1);
             Region r = new Region();
-            r.id = String.format("S%03d", ++id);
+            r.id = String.format("C%04d", ++id);
             r.start = ins.get(i).getAddress().toString();
             r.end = ins.get(hi).getAddress().toString();
-            r.reason = "v56-synthesized-coverage";
+            boolean seed = containsImmediate2712(ins, i, hi);
+            r.priority = seed ? 0 : 1;
+            r.reason = seed ? "v56-exhaustive-coverage+login-seed-0x2712" : "v56-exhaustive-coverage";
             out.add(r);
             if (hi == ins.size()-1) break;
         }
+        out.sort(Comparator.comparingInt(r -> r.priority));
         return out;
+    }
+
+    private boolean containsImmediate2712(List<Instruction> ins, int lo, int hi) {
+        for (int i=lo; i<=hi && i<ins.size(); i++) {
+            Instruction x = ins.get(i);
+            for (int op=0; op<x.getNumOperands(); op++) {
+                try {
+                    Scalar s = x.getScalar(op);
+                    if (s != null && s.getUnsignedValue() == 0x2712L) return true;
+                } catch (Exception ignored) {}
+            }
+        }
+        return false;
     }
 
     private Map<String,Boolean> readWholeStatus(File file) throws Exception {
@@ -242,7 +280,7 @@ public class ExportV56RegionC extends GhidraScript {
         Map<String,List<Region>> out = new LinkedHashMap<>();
         for (Map<String,String> q : readCsv(file)) {
             String e=canon(q.get("function_entry")); if(e.isEmpty()) continue;
-            Region r=new Region(); r.id=q.getOrDefault("region_id",""); r.start=q.getOrDefault("start_address",""); r.end=q.getOrDefault("end_address",""); r.reason=q.getOrDefault("reason","");
+            Region r=new Region(); r.id=q.getOrDefault("region_id",""); r.start=q.getOrDefault("start_address",""); r.end=q.getOrDefault("end_address",""); r.reason=q.getOrDefault("reason",""); r.priority=1;
             out.computeIfAbsent(e,z->new ArrayList<>()).add(r);
         }
         return out;
