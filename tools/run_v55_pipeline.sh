@@ -24,7 +24,9 @@ test -s "$OUT/v52_selected_functions.csv"; test -s "$OUT/v52_protected_functions
 cp "$OUT/v52_selected_functions.csv" "$OUT/v51_selected_functions.csv"; cp "$OUT/v52_selected_functions.csv" "$OUT/v5_selected_functions.csv"; cp "$OUT/v52_selected_functions.csv" "$OUT/v4_selected_functions.csv"
 
 echo "[v5.6] selective deep export + protected preservation + selected region fallback"
-"$GHIDRA_HOME/support/analyzeHeadless" "$PROJECT_DIR" "$PROJECT_NAME" -process "$PROGRAM_NAME" -noanalysis -scriptPath "$REPO_ROOT/ghidra_scripts" \
+# Region-C fallback temporarily removes original functions to create bounded temporary functions.
+# Process this stage read-only so those structural mutations are discarded before the All-C pass.
+"$GHIDRA_HOME/support/analyzeHeadless" "$PROJECT_DIR" "$PROJECT_NAME" -process "$PROGRAM_NAME" -readOnly -noanalysis -scriptPath "$REPO_ROOT/ghidra_scripts" \
   -postScript ExportV4Selected.java "$OUT" "$OUT/v52_selected_functions.csv" 1800 20 \
   -postScript ExportV51RawPcode.java "$OUT" "$OUT/v52_selected_functions.csv" 420 40000 120000 6000000 \
   -postScript ExportV51HighPcode.java "$OUT" "$OUT/v52_selected_functions.csv" 220 25 80000 2500000 \
