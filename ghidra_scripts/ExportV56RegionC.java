@@ -38,6 +38,7 @@ public class ExportV56RegionC extends GhidraScript {
         List<Target> targets = readTargets(selection);
         Map<String,List<Region>> regionMap = readRegions(new File(outDir, "v4_giant_region_index.csv"));
         Map<String,Boolean> wholeOk = readWholeStatus(new File(outDir, "v51_high_pcode_summary.csv"));
+        Map<String,Boolean> wholeCOk = readWholeCStatus(new File(outDir, "v4_selected_export.csv"));
         Map<String,Integer> existingRegionSuccess = readRegionSuccess(new File(outDir, "v55_region_high_pcode_summary.csv"));
 
         File humanRoot = new File(outDir, "human/reconstructed_c_v56");
@@ -68,11 +69,15 @@ public class ExportV56RegionC extends GhidraScript {
 
             for (Target t : targets) {
                 if (monitor.isCancelled()) break;
-                if (!"region".equalsIgnoreCase(t.mode)) continue;
                 String key = canon(t.entry);
-                boolean needRetry = !Boolean.TRUE.equals(wholeOk.get(key)) && existingRegionSuccess.getOrDefault(key, 0) == 0;
-                if (t.loginBoost <= 0 && !needRetry) continue;
+                boolean wantsRegion = "region".equalsIgnoreCase(t.mode);
+                boolean wholePcodeOk = Boolean.TRUE.equals(wholeOk.get(key));
+                boolean wholeCDecompiled = Boolean.TRUE.equals(wholeCOk.get(key));
+                boolean needPcodeRetry = !wholePcodeOk && existingRegionSuccess.getOrDefault(key, 0) == 0;
+                boolean needCFallback = !wholeCDecompiled;
+                if (!wantsRegion && !needCFallback && !needPcodeRetry) continue;
                 targetCount++;
+
                 List<Region> regions = new ArrayList<>(regionMap.getOrDefault(key, Collections.emptyList()));
                 if (regions.isEmpty()) regions = synthesizeRegions(t);
                 if (regions.isEmpty()) {
@@ -89,7 +94,7 @@ public class ExportV56RegionC extends GhidraScript {
                     decomp.flushCache();
                 }
 
-                boolean retrySatisfied = !needRetry;
+                boolean retrySatisfied = !needPcodeRetry;
                 for (Region r : regions) {
                     if (monitor.isCancelled()) break;
                     regionAttempts++;
@@ -202,6 +207,17 @@ public class ExportV56RegionC extends GhidraScript {
         }
         return out;
     }
+
+    private Map<String,Boolean> readWholeCStatus(File file) throws Exception {
+        Map<String,Boolean> out = new HashMap<>();
+        for (Map<String,String> r : readCsv(file)) {
+            String e = canon(r.get("entry"));
+            boolean ok = "ok".equalsIgnoreCase(r.get("decompile_status"));
+            if (!e.isEmpty()) out.put(e, ok);
+        }
+        return out;
+    }
+
     private Map<String,Integer> readRegionSuccess(File file) throws Exception {
         Map<String,Integer> out = new HashMap<>();
         for (Map<String,String> r : readCsv(file)) {
