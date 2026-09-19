@@ -61,6 +61,15 @@ def meaningful_c(path):
     return bool(structural and signal), text
 
 
+def has_2712(text):
+    low = (text or '').lower()
+    return '0x2712' in low or re.search(r'(?<!\d)10002(?!\d)', low) is not None
+
+
+def has_https(text):
+    return 'https' in (text or '').lower()
+
+
 selected = {canon(r.get('entry')): r for r in rows('v52_selected_functions.csv') if canon(r.get('entry'))}
 whole_rows = {canon(r.get('entry')): r for r in rows('v4_selected_export.csv') if canon(r.get('entry'))}
 region_rows = rows('v56_region_c_index.csv')
@@ -83,6 +92,20 @@ https_functions = {
 }
 strong_login = immediate_seed_functions & https_functions
 
+# Index native whole-function Ghidra C by the entry marker emitted by ExportV4Selected.
+whole_c_files = {}
+whole_c_text = {}
+whole_dir = root / 'v4_decompiled_selected'
+if whole_dir.exists():
+    for p in whole_dir.glob('*.c'):
+        text = p.read_text(encoding='utf-8', errors='replace')
+        m = re.search(r'\bentry=([0-9A-Fa-fx]+)', text)
+        if not m:
+            continue
+        e = canon(m.group(1))
+        whole_c_files[e] = p
+        whole_c_text[e] = text
+
 errors = []
 function_report = []
 whole_ok_count = 0
@@ -90,6 +113,8 @@ fallback_count = 0
 fallback_complete = 0
 region_expected_total = 0
 region_success_total = 0
+verified_2712_functions = 0
+verified_strong_login_functions = 0
 
 for e, s in sorted(selected.items()):
     wr = whole_rows.get(e, {})
@@ -107,10 +132,30 @@ for e, s in sorted(selected.items()):
         'successful_regions': 0,
         'meaningful_c_regions': 0,
         'seed_region_ok': None,
+        'https_context_ok': None,
     }
 
     if whole_ok:
         whole_ok_count += 1
+        text = whole_c_text.get(e, '')
+        cpath = whole_c_files.get(e)
+        meaningful, _ = meaningful_c(cpath) if cpath else (False, '')
+        if not meaningful:
+            errors.append(f'{e}: whole decompile marked ok but meaningful C file is missing')
+        if e in immediate_seed_functions:
+            seed_ok = meaningful and has_2712(text)
+            report['seed_region_ok'] = seed_ok
+            if seed_ok:
+                verified_2712_functions += 1
+            else:
+                errors.append(f'{e}: whole C did not preserve 0x2712/10002 login seed')
+        if e in strong_login:
+            https_ok = meaningful and has_https(text)
+            report['https_context_ok'] = https_ok
+            if report['seed_region_ok'] and https_ok:
+                verified_strong_login_functions += 1
+            if not https_ok:
+                errors.append(f'{e}: strong 0x2712 + HTTPS function whole C did not preserve HTTPS context')
         function_report.append(report)
         continue
 
@@ -127,19 +172,27 @@ for e, s in sorted(selected.items()):
 
     meaningful = 0
     seed_ok = False
+    strong_https_ok = False
     for r in successful:
         p = root / (r.get('c_file') or '')
         ok, text = meaningful_c(p)
         if ok:
             meaningful += 1
         if 'login-seed-0x2712' in (r.get('reason') or '') and ok:
-            # Ghidra may render the constant in hex or decimal.
-            if ('0x2712' in text.lower()) or ('10002' in text):
+            if has_2712(text):
                 seed_ok = True
+            if has_https(text):
+                strong_https_ok = True
     report['meaningful_c_regions'] = meaningful
 
     if e in immediate_seed_functions:
         report['seed_region_ok'] = seed_ok
+        if seed_ok:
+            verified_2712_functions += 1
+    if e in strong_login:
+        report['https_context_ok'] = strong_https_ok
+        if seed_ok and strong_https_ok:
+            verified_strong_login_functions += 1
 
     if expected == 0:
         errors.append(f'{e}: fallback required but instruction count/coverage is unavailable')
@@ -150,9 +203,13 @@ for e, s in sorted(selected.items()):
     if meaningful != expected:
         errors.append(f'{e}: meaningful C regions {meaningful} != expected {expected}')
     if e in immediate_seed_functions and not seed_ok:
-        errors.append(f'{e}: 0x2712 seed region did not produce verified C-like output')
+        errors.append(f'{e}: 0x2712 seed region did not produce verified C-like output containing 0x2712/10002')
+    if e in strong_login and not strong_https_ok:
+        errors.append(f'{e}: strong 0x2712 + HTTPS fallback did not preserve HTTPS in seed-region C')
 
-    if expected > 0 and len(exhaustive) == expected and len(successful) == expected and meaningful == expected and (e not in immediate_seed_functions or seed_ok):
+    login_ok = e not in immediate_seed_functions or seed_ok
+    strong_ok = e not in strong_login or strong_https_ok
+    if expected > 0 and len(exhaustive) == expected and len(successful) == expected and meaningful == expected and login_ok and strong_ok:
         fallback_complete += 1
 
     function_report.append(report)
@@ -166,7 +223,9 @@ report = {
     'expected_region_windows': region_expected_total,
     'successful_region_windows': region_success_total,
     'immediate_0x2712_functions': sorted(immediate_seed_functions),
+    'verified_0x2712_c_functions': verified_2712_functions,
     'strong_0x2712_https_functions': sorted(strong_login),
+    'verified_strong_login_c_functions': verified_strong_login_functions,
     'errors': errors,
     'functions': function_report,
 }
@@ -182,7 +241,9 @@ with (root / 'v56_c_coverage_acceptance.md').open('w', encoding='utf-8') as w:
     w.write(f"- Expected region windows: **{region_expected_total}**\n")
     w.write(f"- Successful region windows: **{region_success_total}**\n")
     w.write(f"- 0x2712 seed functions: **{len(immediate_seed_functions)}**\n")
+    w.write(f"- Verified 0x2712 in C: **{verified_2712_functions}**\n")
     w.write(f"- Strong 0x2712 + HTTPS functions: **{len(strong_login)}**\n")
+    w.write(f"- Verified strong login C: **{verified_strong_login_functions}**\n")
     if errors:
         w.write('\n## Errors\n\n')
         for e in errors[:500]:
