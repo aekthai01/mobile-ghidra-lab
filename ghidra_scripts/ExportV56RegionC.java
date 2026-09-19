@@ -22,7 +22,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.*;
 
 public class ExportV56RegionC extends GhidraScript {
-    private static class Target { String entry, name, mode; int size, rank; }
+    private static class Target { String entry, name, mode; int size, rank, loginBoost; }
     private static class Region { String id, start, end, reason; }
 
     @Override
@@ -69,8 +69,10 @@ public class ExportV56RegionC extends GhidraScript {
             for (Target t : targets) {
                 if (monitor.isCancelled()) break;
                 if (!"region".equalsIgnoreCase(t.mode)) continue;
-                targetCount++;
                 String key = canon(t.entry);
+                boolean needRetry = !Boolean.TRUE.equals(wholeOk.get(key)) && existingRegionSuccess.getOrDefault(key, 0) == 0;
+                if (t.loginBoost <= 0 && !needRetry) continue;
+                targetCount++;
                 List<Region> regions = new ArrayList<>(regionMap.getOrDefault(key, Collections.emptyList()));
                 if (regions.isEmpty()) regions = synthesizeRegions(t);
                 if (regions.isEmpty()) {
@@ -87,7 +89,6 @@ public class ExportV56RegionC extends GhidraScript {
                     decomp.flushCache();
                 }
 
-                boolean needRetry = !Boolean.TRUE.equals(wholeOk.get(key)) && existingRegionSuccess.getOrDefault(key, 0) == 0;
                 boolean retrySatisfied = !needRetry;
                 for (Region r : regions) {
                     if (monitor.isCancelled()) break;
@@ -216,7 +217,7 @@ public class ExportV56RegionC extends GhidraScript {
         for (Map<String,String> r : readCsv(file)) {
             Target t = new Target();
             t.entry=r.getOrDefault("entry",""); t.name=r.getOrDefault("name",""); t.mode=r.getOrDefault("recommended_mode","");
-            t.size=parseInt(r.get("size_bytes"),0); t.rank=++rank;
+            t.size=parseInt(r.get("size_bytes"),0); t.loginBoost=parseInt(r.get("v56_login_boost"),0); t.rank=++rank;
             if (!t.entry.isEmpty()) out.add(t);
         }
         return out;
