@@ -54,14 +54,17 @@ for r in all_rows:
   errors.append(f'{e}: strong login C output lost HTTPS evidence')
  details.append({'entry':e,'status':st,'instructions':ins,'complete':ok,'login_0x2712':e in imm,'strong_login':e in strong})
 
-# Inventory is the independent discovery baseline. It should not be smaller than the all-C pass.
-inv=rows('functions.csv')
-if inv and len(all_rows)!=len(inv):errors.append(f'all-C function count {len(all_rows)} != discovered inventory {len(inv)}')
+inventory=rows('functions.csv')
+internal=[r for r in inventory if (r.get('is_external') or '').strip().lower()!='true']
+internal_entries={canon(r.get('entry')) for r in internal}; all_entries={canon(r.get('entry')) for r in all_rows}
+missing=sorted(internal_entries-all_entries); extra=sorted(all_entries-internal_entries)
+if len(all_rows)!=len(internal) or missing or extra:
+ errors.append(f'all-C inventory mismatch: indexed={len(all_rows)} internal_discovered={len(internal)} missing={len(missing)} extra={len(extra)}')
 if not all_rows:errors.append('v56_all_c_index.csv is empty')
-report={'status':'pass' if not errors else 'fail','discovered_functions':len(inv),'all_c_functions':len(all_rows),'whole_c_functions':whole,'fallback_functions':fallback,'fallback_complete':complete,'immediate_0x2712_functions':sorted(imm),'strong_0x2712_https_functions':sorted(strong),'errors':errors,'functions':details}
+report={'status':'pass' if not errors else 'fail','discovered_functions':len(inventory),'internal_discovered_functions':len(internal),'all_c_functions':len(all_rows),'whole_c_functions':whole,'fallback_functions':fallback,'fallback_complete':complete,'missing_internal_entries':missing,'extra_entries':extra,'immediate_0x2712_functions':sorted(imm),'strong_0x2712_https_functions':sorted(strong),'errors':errors,'functions':details}
 (root/'v56_all_c_acceptance.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
 with (root/'v56_all_c_acceptance.md').open('w',encoding='utf-8') as w:
- w.write('# V5.6 All-C acceptance\n\n');w.write(f"- Status: **{report['status']}**\n- Discovered functions: **{len(inv)}**\n- All-C indexed functions: **{len(all_rows)}**\n- Whole C: **{whole}**\n- Fallback functions: **{fallback}**\n- Complete fallback: **{complete}**\n- 0x2712 functions: **{len(imm)}**\n- Strong 0x2712 + HTTPS: **{len(strong)}**\n")
+ w.write('# V5.6 All-C acceptance\n\n');w.write(f"- Status: **{report['status']}**\n- Discovered functions: **{len(inventory)}**\n- Internal discovered functions: **{len(internal)}**\n- All-C indexed functions: **{len(all_rows)}**\n- Whole C: **{whole}**\n- Fallback functions: **{fallback}**\n- Complete fallback: **{complete}**\n- 0x2712 functions: **{len(imm)}**\n- Strong 0x2712 + HTTPS: **{len(strong)}**\n")
  if errors:
   w.write('\n## Errors\n\n');[w.write(f'- {x}\n') for x in errors[:1000]]
 if errors:raise SystemExit('V5.6 All-C failed: '+'; '.join(errors[:40]))
