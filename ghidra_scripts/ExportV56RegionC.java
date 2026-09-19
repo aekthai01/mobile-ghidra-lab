@@ -81,7 +81,7 @@ public class ExportV56RegionC extends GhidraScript {
                 }
 
                 FunctionManager fm = currentProgram.getFunctionManager();
-                Address entry = parseAddress(key);
+                Address entry = parseMglAddress(key);
                 Function original = entry == null ? null : fm.getFunctionAt(entry);
                 if (original == null && entry != null) original = fm.getFunctionContaining(entry);
                 if (original != null) {
@@ -93,7 +93,7 @@ public class ExportV56RegionC extends GhidraScript {
                 for (Region r : regions) {
                     if (monitor.isCancelled()) break;
                     regionAttempts++;
-                    Address sa = parseAddress(r.start), ea = parseAddress(r.end);
+                    Address sa = parseMglAddress(r.start), ea = parseMglAddress(r.end);
                     Instruction si = sa == null ? null : currentProgram.getListing().getInstructionContaining(sa);
                     Instruction ei = ea == null ? null : currentProgram.getListing().getInstructionContaining(ea);
                     if (si == null && sa != null) si = currentProgram.getListing().getInstructionAt(sa);
@@ -170,7 +170,7 @@ public class ExportV56RegionC extends GhidraScript {
 
     private List<Region> synthesizeRegions(Target t) {
         List<Region> out = new ArrayList<>();
-        Address start = parseAddress(t.entry);
+        Address start = parseMglAddress(t.entry);
         if (start == null || t.size <= 0) return out;
         Address end;
         try { end = start.add(Math.max(0, t.size - 1)); } catch (Exception e) { return out; }
@@ -238,7 +238,7 @@ public class ExportV56RegionC extends GhidraScript {
             while((line=br.readLine())!=null){if(line.trim().isEmpty())continue;List<String> xs=parseCsv(line);Map<String,String> r=new LinkedHashMap<>();for(int i=0;i<hs.size();i++)r.put(hs.get(i),get(xs,i));out.add(r);}
         } return out;
     }
-    private Address parseAddress(String s){try{return currentProgram.getAddressFactory().getDefaultAddressSpace().getAddress(Long.parseUnsignedLong(canon(s),16));}catch(Exception e){return null;}}
+    private Address parseMglAddress(String s){try{return currentProgram.getAddressFactory().getDefaultAddressSpace().getAddress(Long.parseUnsignedLong(canon(s),16));}catch(Exception e){return null;}}
     private String canon(String s){if(s==null)return "";String x=s.trim();if(x.startsWith("0x")||x.startsWith("0X"))x=x.substring(2);try{return String.format("%08X",Long.parseUnsignedLong(x,16));}catch(Exception e){return x.toUpperCase();}}
     private String varnode(Varnode v){return v==null?"":v.toString();}
     private int parseInt(String s,int fallback){try{return Integer.parseInt(s==null?"":s);}catch(Exception e){return fallback;}}
