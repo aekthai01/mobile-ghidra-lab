@@ -23,17 +23,23 @@ python "$REPO_ROOT/tools/v52_reselect.py" "$OUT" > "$OUT/v52_reselect.log"
 test -s "$OUT/v52_selected_functions.csv"; test -s "$OUT/v52_protected_functions.csv"; test -s "$OUT/v56_login_priority.json"
 cp "$OUT/v52_selected_functions.csv" "$OUT/v51_selected_functions.csv"; cp "$OUT/v52_selected_functions.csv" "$OUT/v5_selected_functions.csv"; cp "$OUT/v52_selected_functions.csv" "$OUT/v4_selected_functions.csv"
 
-echo "[v5.6] selective deep export + protected preservation + selected region fallback"
-# Region-C fallback temporarily removes original functions to create bounded temporary functions.
-# Process this stage read-only so those structural mutations are discarded before the All-C pass.
+echo "[v5.6] selective deep export + protected preservation"
+# High-P-code fallback may temporarily remove original functions. Keep this invocation read-only so
+# every structural mutation is discarded before the dedicated Region-C invocation starts.
 "$GHIDRA_HOME/support/analyzeHeadless" "$PROJECT_DIR" "$PROJECT_NAME" -process "$PROGRAM_NAME" -readOnly -noanalysis -scriptPath "$REPO_ROOT/ghidra_scripts" \
   -postScript ExportV4Selected.java "$OUT" "$OUT/v52_selected_functions.csv" 1800 20 \
   -postScript ExportV51RawPcode.java "$OUT" "$OUT/v52_selected_functions.csv" 420 40000 120000 6000000 \
-  -postScript ExportV51HighPcode.java "$OUT" "$OUT/v52_selected_functions.csv" 220 25 80000 2500000 \
-  -postScript ExportV56RegionC.java "$OUT" "$OUT/v52_selected_functions.csv" 20 20000 > "$OUT/ghidra_selected.log" 2>&1
-test -s "$OUT/v4_selected_export.csv"; test -s "$OUT/v51_raw_pcode.csv"; test -s "$OUT/v51_high_pcode_summary.csv"; test -s "$OUT/v54_protected_evidence_summary.csv"; test -s "$OUT/v55_region_high_pcode_summary.csv"; test -s "$OUT/v56_region_c_index.csv"
+  -postScript ExportV51HighPcode.java "$OUT" "$OUT/v52_selected_functions.csv" 220 25 80000 2500000 > "$OUT/ghidra_selected.log" 2>&1
+test -s "$OUT/v4_selected_export.csv"; test -s "$OUT/v51_raw_pcode.csv"; test -s "$OUT/v51_high_pcode_summary.csv"; test -s "$OUT/v54_protected_evidence_summary.csv"; test -s "$OUT/v55_region_high_pcode_summary.csv"
 
-# Validate the legacy deep-priority fallback before the all-function fallback replaces the region index.
+echo "[v5.6] selected exhaustive Region-C fallback on pristine function map"
+# Run Region-C separately so its originalBody/function lookups are based on the pristine analyzed program,
+# not on temporary function removals performed by ExportV51HighPcode in the previous invocation.
+"$GHIDRA_HOME/support/analyzeHeadless" "$PROJECT_DIR" "$PROJECT_NAME" -process "$PROGRAM_NAME" -readOnly -noanalysis -scriptPath "$REPO_ROOT/ghidra_scripts" \
+  -postScript ExportV56RegionC.java "$OUT" "$OUT/v52_selected_functions.csv" 20 20000 > "$OUT/ghidra_selected_region_c.log" 2>&1
+test -s "$OUT/v56_region_c_index.csv"
+
+# Keep the strict selected/deep-priority gate. The All-C pass is not allowed to hide a broken priority path.
 python "$REPO_ROOT/tools/v56_c_coverage_validate.py" "$OUT" > "$OUT/v56_c_coverage_validate.log"
 test -s "$OUT/v56_c_coverage_acceptance.json"
 
