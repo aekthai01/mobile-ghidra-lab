@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import argparse, hashlib, importlib.util, json, os, stat, tempfile
+import argparse, hashlib, importlib.util, json, os, stat, sys, tempfile
 from pathlib import Path
 
 
@@ -9,6 +9,7 @@ def load_core(path: Path):
     if spec is None or spec.loader is None:
         raise RuntimeError(f"cannot import resolver core: {path}")
     mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
     spec.loader.exec_module(mod)
     return mod
 
