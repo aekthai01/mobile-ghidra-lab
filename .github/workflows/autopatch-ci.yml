@@ -107,10 +107,10 @@ jobs:
               got = (ins[0].mnemonic, ins[0].op_str)
               assert got[0] == mn, (hex(rva), got, (mn, ops))
               if ops:
-                  assert got[1].replace('0x0','0x') == ops or got[1] == ops, (hex(rva), got, (mn, ops))
+                  norm = lambda s: s.replace('#', '').lower()
+                  assert norm(got[1]) == norm(ops), (hex(rva), got, (mn, ops))
               print(f'0x{rva:X}: {ins[0].mnemonic} {ins[0].op_str}')
 
-          # Legitimate setters that already write desired values must remain untouched.
           assert int.from_bytes(out[0x23C6B8:0x23C6BC], 'little') == 0x5280002A
           assert int.from_bytes(out[0x23C6CC:0x23C6D0], 'little') == 0x089FFD0A
           assert int.from_bytes(out[0x217E14:0x217E18], 'little') == 0x5280006A
