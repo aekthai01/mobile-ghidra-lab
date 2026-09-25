@@ -37,7 +37,9 @@ jobs:
           cp /tmp/mobile_autopatch_v4.py /tmp/mobile_autopatch_v5.py
           patch /tmp/mobile_autopatch_v5.py < autopatch/v4_to_v5.patch
           echo '68e6cd6ddade4ba22e7b3a7e486aca7efee9fe6a2b8a7aa4af1de130d29ee6b6  /tmp/mobile_autopatch_v5.py' | sha256sum --check
-          python -m py_compile /tmp/mobile_autopatch_v4.py /tmp/mobile_autopatch_v5.py autopatch/autopatch_v5_apply.py autopatch/autopatch_v6_state_exact.py autopatch/analyze_v7_caves.py
+          python -m py_compile /tmp/mobile_autopatch_v4.py /tmp/mobile_autopatch_v5.py \
+            autopatch/autopatch_v5_apply.py autopatch/autopatch_v6_state_exact.py \
+            autopatch/analyze_v7_caves.py autopatch/analyze_v7_writers.py
 
       - name: Verify target library
         shell: bash
@@ -46,11 +48,12 @@ jobs:
           echo '5a14855bfdab54000a7724b6935a1191ed654a6b43c2ed514ba54fcc6ae2bb48  input/libmedia_codec_ndk.so' | sha256sum --check
           file input/libmedia_codec_ndk.so
 
-      - name: Audit NOP caves for v7 setters
+      - name: Audit v7 code caves and writer contexts
         shell: bash
         run: |
           set -euo pipefail
           python autopatch/analyze_v7_caves.py input/libmedia_codec_ndk.so --near 0x244B54 --min-insns 4 --limit 60 | tee v7_caves.txt
+          python autopatch/analyze_v7_writers.py input/libmedia_codec_ndk.so --radius 12 | tee v7_writers.txt
 
       - name: Run standalone v5 regression
         shell: bash
@@ -109,9 +112,10 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: autopatch-v7-audit-${{ github.run_id }}-${{ github.run_attempt }}
+          name: autopatch-v7-writer-audit-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             v7_caves.txt
+            v7_writers.txt
             libmedia_codec_ndk.v6-state.so
             patch_manifest_v6.json
             autopatch_v6.log
