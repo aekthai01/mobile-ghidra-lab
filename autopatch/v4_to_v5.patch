@@ -1,0 +1,173 @@
+--- mobile_autopatch_v4.py
++++ mobile_autopatch_v5.py
+@@ -18,7 +18,10 @@
+ 
+ Step 3 upgrades the resolver to bounded control-flow/data-flow tracing. It follows
+ conditional/unconditional direct branches, register copies and more AArch64 memory
+-forms, then emits a read-forcing patch PLAN. It still writes no code bytes.
++forms, then emits a read-forcing patch plan.
++
++Step 4 (--apply) writes those verified read-forcing instructions to a NEW ELF, then
++re-reads every patched word and fails closed if any target has no safe read plan.
+ """
+ 
+ from __future__ import annotations
+@@ -974,7 +977,11 @@
+     plans = []
+     seen = set()
+     for x in xrefs:
+-        if x.access != "read" or x.value_register is None:
++        if (
++            x.access != "read"
++            or x.value_register is None
++            or x.access_width != target.spec.width
++        ):
+             continue
+         # A byte/halfword/word scalar load produces a W register value; qword uses X.
+         mov_width = 8 if target.spec.width == 8 else 4
+@@ -994,10 +1001,66 @@
+             "replacement_word": f"0x{word:08X}",
+             "replacement_bytes_le": word.to_bytes(4, "little").hex(),
+             "destination_register": x.value_register,
+-            "reason": "replace exact scalar read with MOV immediate; PLAN ONLY",
++            "reason": "replace exact scalar read with MOV immediate",
+         })
+     return plans
+ 
++
++def default_output_path(src: Path) -> Path:
++    if src.suffix:
++        return src.with_name(f"{src.stem}.patched{src.suffix}")
++    return src.with_name(src.name + ".patched")
++
++
++def apply_patch_plans(image: ElfImage, plans: list[dict], output: Path) -> tuple[str, str]:
++    if output.resolve() == image.path.resolve():
++        raise PatchError("refusing to patch the source ELF in place")
++    if output.exists():
++        raise PatchError(f"output already exists: {output}")
++
++    by_offset = {}
++    for plan in plans:
++        off = int(plan["instruction_file_offset"])
++        original = int(plan["original_word"], 16)
++        replacement = int(plan["replacement_word"], 16)
++        prior = by_offset.get(off)
++        if prior is not None and prior != replacement:
++            raise PatchError(
++                f"conflicting replacements at file offset 0x{off:X}: "
++                f"0x{prior:08X} vs 0x{replacement:08X}"
++            )
++        by_offset[off] = replacement
++        actual = word_at(image.data, off)
++        if actual != original:
++            raise PatchError(
++                f"original-word verification failed at 0x{off:X}: "
++                f"expected 0x{original:08X}, got "
++                f"{None if actual is None else f'0x{actual:08X}'}"
++            )
++
++    patched = bytearray(image.data)
++    for off, replacement in sorted(by_offset.items()):
++        patched[off:off + 4] = replacement.to_bytes(4, "little")
++
++    output.parent.mkdir(parents=True, exist_ok=True)
++    output.write_bytes(patched)
++    try:
++        output.chmod(image.path.stat().st_mode & 0o777)
++    except OSError:
++        pass
++
++    verify = output.read_bytes()
++    for off, replacement in sorted(by_offset.items()):
++        actual = word_at(verify, off)
++        if actual != replacement:
++            raise PatchError(
++                f"post-write verification failed at 0x{off:X}: "
++                f"expected 0x{replacement:08X}, got "
++                f"{None if actual is None else f'0x{actual:08X}'}"
++            )
++
++    return sha256_bytes(image.data), sha256_bytes(verify)
++
+ def context_lines(image: ElfImage, x: Xref, radius: int = 3) -> list[str]:
+     lines = []
+     for delta in range(-radius, radius + 1):
+@@ -1040,6 +1103,8 @@
+     p.add_argument("--window", type=int, default=96)
+     p.add_argument("--context", type=int, default=3)
+     p.add_argument("--json-report", type=Path)
++    p.add_argument("--apply", action="store_true", help="write verified read-force plan to a new ELF")
++    p.add_argument("-o", "--output", type=Path, help="output ELF for --apply")
+     args = p.parse_args(argv)
+ 
+     try:
+@@ -1077,6 +1142,8 @@
+         }
+ 
+         total_exact = 0
++        all_plans = []
++        target_plan_counts = {}
+         for target in targets:
+             print(f"[{target.spec.name}]")
+             print(f"  requested value : {target.spec.value}")
+@@ -1088,7 +1155,7 @@
+             xrefs, pages = scan_target_xrefs(
+                 image,
+                 target,
+-                max(1, min(args.window, 64)),
++                max(1, min(args.window, 256)),
+             )
+             total_exact += len(xrefs)
+ 
+@@ -1127,7 +1194,20 @@
+                         f"{pc.seed_kind} r{pc.seed_register}"
+                     )
+ 
++            exact_scalar_reads = [
++                x for x in xrefs
++                if x.access == "read" and x.access_width == target.spec.width
++            ]
+             patch_plan = make_patch_plan(target, xrefs)
++            planned_rvas = {int(p["instruction_rva"]) for p in patch_plan}
++            exact_read_rvas = {x.instruction_rva for x in exact_scalar_reads}
++            if args.apply and planned_rvas != exact_read_rvas:
++                raise PatchError(
++                    f"{target.spec.name}: refusing --apply because the read-force plan is incomplete; "
++                    f"exact={sorted(exact_read_rvas)} planned={sorted(planned_rvas)}"
++                )
++            target_plan_counts[target.spec.name] = len(patch_plan)
++            all_plans.extend(patch_plan)
+             if patch_plan:
+                 print()
+                 print(f"  read-force plan : {len(patch_plan)} instruction(s), NOT WRITTEN")
+@@ -1165,6 +1245,29 @@
+             )
+             return 5
+ 
++        if args.apply:
++            missing = [t.spec.name for t in targets if target_plan_counts.get(t.spec.name, 0) == 0]
++            if missing:
++                raise PatchError(
++                    "refusing --apply because these targets have no verified scalar read plan: "
++                    + ", ".join(missing)
++                )
++            output = args.output or default_output_path(args.elf)
++            before_sha, after_sha = apply_patch_plans(image, all_plans, output)
++            report["apply"] = {
++                "output": str(output),
++                "sha256_before": before_sha,
++                "sha256_after": after_sha,
++                "patched_instruction_count": len({p["instruction_file_offset"] for p in all_plans}),
++            }
++            if args.json_report:
++                args.json_report.write_text(json.dumps(report, indent=2), encoding="utf-8")
++            print(f"[+] patched output : {output}")
++            print(f"[+] SHA256 before  : {before_sha}")
++            print(f"[+] SHA256 after   : {after_sha}")
++            print(f"[+] verified words : {len({p['instruction_file_offset'] for p in all_plans})}")
++            return 0
++
+         print("[+] CFG/data-flow xref scan complete; patch plan only, no code was written")
+         return 0
+ 
