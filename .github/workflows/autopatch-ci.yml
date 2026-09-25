@@ -12,6 +12,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: autopatch-ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test-autopatch:
     runs-on: ubuntu-24.04
@@ -24,7 +28,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install dependencies
-        run: python -m pip install --disable-pip-version-check pyelftools
+        run: python -m pip install --disable-pip-version-check pyelftools capstone
 
       - name: Reconstruct v4 exactly
         shell: bash
@@ -33,6 +37,7 @@ jobs:
           cat autopatch/v4.b64.part* | tr -d '\n\r' | base64 -d > /tmp/mobile_autopatch_v4.py
           echo '5ac67939d12c28b17cae440422867102972391efa98b3323fa9de07e93ad8d88  /tmp/mobile_autopatch_v4.py' | sha256sum --check
           python -m py_compile /tmp/mobile_autopatch_v4.py
+          python -m py_compile autopatch/autopatch_v5_apply.py
 
       - name: Verify target library
         shell: bash
@@ -55,6 +60,54 @@ jobs:
             --json-report xrefs_v4.json \
             | tee autopatch_v4.log
 
+      - name: Run v5 patch writer
+        shell: bash
+        run: |
+          set -euo pipefail
+          python autopatch/autopatch_v5_apply.py \
+            input/libmedia_codec_ndk.so \
+            byte_36AE84=1 \
+            dword_36AF34=3 \
+            --core /tmp/mobile_autopatch_v4.py \
+            --window 96 \
+            -o libmedia_codec_ndk.patched.so \
+            --manifest patch_manifest_v5.json \
+            | tee autopatch_v5.log
+          file libmedia_codec_ndk.patched.so
+          readelf -h libmedia_codec_ndk.patched.so >/dev/null
+
+      - name: Independently verify v5 bytes and disassembly
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY' | tee autopatch_v5_verify.log
+          import json
+          from pathlib import Path
+          from capstone import Cs, CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN
+
+          src = Path('input/libmedia_codec_ndk.so').read_bytes()
+          out = Path('libmedia_codec_ndk.patched.so').read_bytes()
+          m = json.loads(Path('patch_manifest_v5.json').read_text())
+          plans = m['applied_patch_plan']
+          assert len(src) == len(out)
+          expected = bytearray(src)
+          md = Cs(CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN)
+          print('patches:', len(plans))
+          for p in plans:
+              off = int(p['instruction_file_offset'])
+              rva = int(p['instruction_rva'])
+              repl = bytes.fromhex(p['replacement_bytes_le'])
+              expected[off:off+4] = repl
+              ins = list(md.disasm(out[off:off+4], rva))
+              assert len(ins) == 1, (hex(rva), ins)
+              text = f'{ins[0].mnemonic} {ins[0].op_str}'.strip()
+              assert ins[0].mnemonic == 'mov', (hex(rva), text)
+              print(f'0x{rva:X}: {p["original_word"]} -> {p["replacement_word"]}  {text}')
+          assert bytes(expected) == out, 'patched output differs outside the exact patch plan'
+          print('byte-for-byte expected image: OK')
+          print('all replacements disassemble as MOV: OK')
+          PY
+
       - name: Summarize results
         if: always()
         shell: bash
@@ -62,38 +115,42 @@ jobs:
           python - <<'PY' | tee autopatch_summary.txt
           import json
           from pathlib import Path
-          p = Path('xrefs_v4.json')
-          if not p.exists():
-              print('xrefs_v4.json missing')
-              raise SystemExit(0)
-          data = json.loads(p.read_text())
-          print('sha256:', data.get('sha256'))
-          for t in data.get('targets', []):
-              name = t['spec']['name']
-              xs = t.get('xrefs', [])
-              reads = sum(x.get('access') == 'read' for x in xs)
-              writes = sum(x.get('access') == 'write' for x in xs)
-              addresses = sum(x.get('access') == 'address' for x in xs)
-              plan = t.get('read_force_patch_plan', [])
-              print(f'{name}: xrefs={len(xs)} reads={reads} writes={writes} addresses={addresses} plan={len(plan)}')
-              for x in xs[:12]:
-                  print(f"  0x{x['instruction_rva']:X} {x['access']} width={x.get('access_width')} word=0x{x['instruction_word']:08X}")
+          for fn in ('xrefs_v4.json', 'patch_manifest_v5.json'):
+              p = Path(fn)
+              if not p.exists():
+                  print(fn, 'missing')
+                  continue
+              data = json.loads(p.read_text())
+              print(fn)
+              print('  before:', data.get('sha256') or data.get('sha256_before'))
+              print('  after :', data.get('sha256_after'))
+              for t in data.get('targets', []):
+                  if 'spec' in t:
+                      xs = t.get('xrefs', [])
+                      print(f"  {t['spec']['name']}: xrefs={len(xs)} plan={len(t.get('read_force_patch_plan', []))}")
+                  else:
+                      print(f"  {t['target']}: xrefs={t['exact_xrefs']} reads={t['exact_reads']} writes={t['exact_writes']} plan={len(t['plan'])}")
           PY
           {
-            echo '## Autopatch v4'
+            echo '## Autopatch CI'
             echo '```text'
             cat autopatch_summary.txt
+            [[ -f autopatch_v5_verify.log ]] && cat autopatch_v5_verify.log
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload v4 report
+      - name: Upload autopatch results
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: autopatch-v4-${{ github.run_id }}-${{ github.run_attempt }}
+          name: autopatch-results-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             xrefs_v4.json
+            patch_manifest_v5.json
+            libmedia_codec_ndk.patched.so
             autopatch_v4.log
+            autopatch_v5.log
+            autopatch_v5_verify.log
             autopatch_summary.txt
           if-no-files-found: warn
-          retention-days: 7
+          retention-days: 4
