@@ -1,6 +1,6 @@
 import unittest
 
-from tools.mobile_autopatch import (
+from phone.mobile_autopatch import (
     ElfLayout,
     LoadSegment,
     PatchError,
