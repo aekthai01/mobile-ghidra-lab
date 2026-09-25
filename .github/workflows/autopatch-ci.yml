@@ -1,0 +1,99 @@
+name: Autopatch CI
+
+on:
+  push:
+    branches:
+      - autopatch-ci
+    paths:
+      - 'autopatch/**'
+      - '.github/workflows/autopatch-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-autopatch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check pyelftools
+
+      - name: Reconstruct v4 exactly
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat autopatch/v4.b64.part* | tr -d '\n\r' | base64 -d > /tmp/mobile_autopatch_v4.py
+          echo '5ac67939d12c28b17cae440422867102972391efa98b3323fa9de07e93ad8d88  /tmp/mobile_autopatch_v4.py' | sha256sum --check
+          python -m py_compile /tmp/mobile_autopatch_v4.py
+
+      - name: Verify target library
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f input/libmedia_codec_ndk.so
+          echo '5a14855bfdab54000a7724b6935a1191ed654a6b43c2ed514ba54fcc6ae2bb48  input/libmedia_codec_ndk.so' | sha256sum --check
+          file input/libmedia_codec_ndk.so
+
+      - name: Run v4 resolver
+        shell: bash
+        run: |
+          set -euo pipefail
+          python /tmp/mobile_autopatch_v4.py \
+            input/libmedia_codec_ndk.so \
+            byte_36AE84=1 \
+            dword_36AF34=3 \
+            --window 96 \
+            --context 1 \
+            --json-report xrefs_v4.json \
+            | tee autopatch_v4.log
+
+      - name: Summarize results
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY' | tee autopatch_summary.txt
+          import json
+          from pathlib import Path
+          p = Path('xrefs_v4.json')
+          if not p.exists():
+              print('xrefs_v4.json missing')
+              raise SystemExit(0)
+          data = json.loads(p.read_text())
+          print('sha256:', data.get('sha256'))
+          for t in data.get('targets', []):
+              name = t['spec']['name']
+              xs = t.get('xrefs', [])
+              reads = sum(x.get('access') == 'read' for x in xs)
+              writes = sum(x.get('access') == 'write' for x in xs)
+              addresses = sum(x.get('access') == 'address' for x in xs)
+              plan = t.get('read_force_patch_plan', [])
+              print(f'{name}: xrefs={len(xs)} reads={reads} writes={writes} addresses={addresses} plan={len(plan)}')
+              for x in xs[:12]:
+                  print(f"  0x{x['instruction_rva']:X} {x['access']} width={x.get('access_width')} word=0x{x['instruction_word']:08X}")
+          PY
+          {
+            echo '## Autopatch v4'
+            echo '```text'
+            cat autopatch_summary.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload v4 report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: autopatch-v4-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            xrefs_v4.json
+            autopatch_v4.log
+            autopatch_summary.txt
+          if-no-files-found: warn
+          retention-days: 7
