@@ -28,99 +28,156 @@ jobs:
       - name: Install dependencies
         run: python -m pip install --disable-pip-version-check pyelftools capstone
 
-      - name: Reconstruct exact v4 and standalone v5
+      - name: Compile patchers and analysis helpers
         shell: bash
         run: |
           set -euo pipefail
-          cat autopatch/v4.b64.part* | tr -d '\n\r' | base64 -d > /tmp/mobile_autopatch_v4.py
-          echo '5ac67939d12c28b17cae440422867102972391efa98b3323fa9de07e93ad8d88  /tmp/mobile_autopatch_v4.py' | sha256sum --check
-          cp /tmp/mobile_autopatch_v4.py /tmp/mobile_autopatch_v5.py
-          patch /tmp/mobile_autopatch_v5.py < autopatch/v4_to_v5.patch
-          echo '68e6cd6ddade4ba22e7b3a7e486aca7efee9fe6a2b8a7aa4af1de130d29ee6b6  /tmp/mobile_autopatch_v5.py' | sha256sum --check
-          python -m py_compile /tmp/mobile_autopatch_v4.py /tmp/mobile_autopatch_v5.py \
-            autopatch/autopatch_v5_apply.py autopatch/autopatch_v6_state_exact.py \
-            autopatch/analyze_v7_caves.py autopatch/analyze_v7_writers.py
+          python -m py_compile \
+            autopatch/autopatch_v6_state_exact.py \
+            autopatch/autopatch_v7_state_full.py \
+            autopatch/analyze_v7_caves.py \
+            autopatch/analyze_v7_writers.py
 
-      - name: Verify target library
+      - name: Verify exact target library
         shell: bash
         run: |
           set -euo pipefail
           echo '5a14855bfdab54000a7724b6935a1191ed654a6b43c2ed514ba54fcc6ae2bb48  input/libmedia_codec_ndk.so' | sha256sum --check
           file input/libmedia_codec_ndk.so
+          readelf -h input/libmedia_codec_ndk.so >/dev/null
 
-      - name: Audit v7 code caves and writer contexts
+      - name: Audit v7 caves and writer contexts
         shell: bash
         run: |
           set -euo pipefail
           python autopatch/analyze_v7_caves.py input/libmedia_codec_ndk.so --near 0x244B54 --min-insns 4 --limit 60 | tee v7_caves.txt
           python autopatch/analyze_v7_writers.py input/libmedia_codec_ndk.so --radius 12 | tee v7_writers.txt
+          grep -F '0x23E8DC-0x23E8F0 count=6' v7_caves.txt
+          grep -F '0x237ADC-0x237AF0 count=6' v7_caves.txt
+          grep -F 'SAFE-DIRECT inbound=-' v7_caves.txt | test "$(cat)" != ''
 
-      - name: Run standalone v5 regression
-        shell: bash
-        run: |
-          set -euo pipefail
-          python /tmp/mobile_autopatch_v5.py input/libmedia_codec_ndk.so byte_36AE84=1 dword_36AF34=3 \
-            --window 96 --context 0 --apply -o libmedia_codec_ndk.v5-regression.so \
-            --json-report standalone_v5_report.json | tee standalone_v5.log
-          echo 'dfbdc949dfbaeda4d3095d15f34663d7b0fa6a10eb69a1cf4ef3133106192732  libmedia_codec_ndk.v5-regression.so' | sha256sum --check
-
-      - name: Run v6 real-memory state force
+      - name: Run v6 regression
         shell: bash
         run: |
           set -euo pipefail
           python autopatch/autopatch_v6_state_exact.py input/libmedia_codec_ndk.so \
-            -o libmedia_codec_ndk.v6-state.so --manifest patch_manifest_v6.json | tee autopatch_v6.log
-          file libmedia_codec_ndk.v6-state.so
-          readelf -h libmedia_codec_ndk.v6-state.so >/dev/null
-          echo '30d9ce817b8abe6d2d4ffd8f253322214da5124f7cb5d732cc1f7ea699993691  libmedia_codec_ndk.v6-state.so' | sha256sum --check
+            -o libmedia_codec_ndk.v6-regression.so --manifest patch_manifest_v6.json >/tmp/v6.log
+          echo '30d9ce817b8abe6d2d4ffd8f253322214da5124f7cb5d732cc1f7ea699993691  libmedia_codec_ndk.v6-regression.so' | sha256sum --check
 
-      - name: Independently verify v6 control flow and stores
+      - name: Run v7 full real-memory state force
         shell: bash
         run: |
           set -euo pipefail
-          python - <<'PY' | tee autopatch_v6_verify.log
+          python autopatch/autopatch_v7_state_full.py \
+            input/libmedia_codec_ndk.so \
+            -o libmedia_codec_ndk.v7-state.so \
+            --manifest patch_manifest_v7.json \
+            | tee autopatch_v7.log
+          file libmedia_codec_ndk.v7-state.so
+          readelf -h libmedia_codec_ndk.v7-state.so >/dev/null
+
+      - name: Independently verify v7 instructions and state writers
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY' | tee autopatch_v7_verify.log
+          import hashlib, json
           from pathlib import Path
           from capstone import Cs, CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN
-          out = Path('libmedia_codec_ndk.v6-state.so').read_bytes()
+
+          src = Path('input/libmedia_codec_ndk.so').read_bytes()
+          out = Path('libmedia_codec_ndk.v7-state.so').read_bytes()
+          report = json.loads(Path('patch_manifest_v7.json').read_text())
+          assert len(src) == len(out)
+          assert hashlib.sha256(src).hexdigest() == '5a14855bfdab54000a7724b6935a1191ed654a6b43c2ed514ba54fcc6ae2bb48'
+          assert hashlib.sha256(out).hexdigest() == report['sha256_after']
+          assert report['patched_instruction_count'] == 25, report['patched_instruction_count']
+
           md = Cs(CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN)
           expected = {
-              0x217B28: ('b', '0x237ae0'), 0x217B4C: ('nop', ''),
-              0x217BE0: ('b', '0x23e8e0'), 0x217BF8: ('mov', 'w8, #3'),
-              0x217DD4: ('mov', 'w8, #3'), 0x23BDEC: ('nop', ''),
-              0x244B54: ('nop', ''), 0x237ADC: ('b', '0x237af4'),
-              0x237AE0: ('mov', 'w9, #1'), 0x237AE4: ('stlrb', 'w9, [x29]'),
-              0x237AE8: ('b', '0x217b2c'), 0x23E8DC: ('b', '0x23e8f4'),
-              0x23E8E0: ('mov', 'w8, #3'), 0x23E8E4: ('str', 'w8, [x24, #0xf34]'),
-              0x23E8E8: ('b', '0x217be4'),
+              # byte setter cave
+              0x237ADC: ('b', '0x237af4'),
+              0x237AE0: ('adrp', 'x16, #0x36a000'),
+              0x237AE4: ('add', 'x16, x16, #0xe84'),
+              0x237AE8: ('mov', 'w9, #1'),
+              0x237AEC: ('stlrb', 'w9, [x16]'),
+              0x237AF0: ('ret', ''),
+              # byte writer/read call sites
+              0x217B28: ('bl', '0x237ae0'),
+              0x23BDEC: ('bl', '0x237ae0'),
+              0x244B54: ('bl', '0x237ae0'),
+              0x20BEDC: ('mov', 'w8, #1'),
+              0x21649C: ('mov', 'w9, #1'),
+              0x218B14: ('mov', 'w8, #1'),
+              0x218EA8: ('mov', 'w9, #1'),
+              0x21A088: ('mov', 'w8, #1'),
+              0x240C50: ('mov', 'w8, #1'),
+              # dword setter cave
+              0x23E8DC: ('b', '0x23e8f4'),
+              0x23E8E0: ('adrp', 'x16, #0x36a000'),
+              0x23E8E4: ('add', 'x16, x16, #0xf34'),
+              0x23E8E8: ('mov', 'w8, #3'),
+              0x23E8EC: ('str', 'w8, [x16]'),
+              0x23E8F0: ('ret', ''),
+              0x217BE0: ('bl', '0x23e8e0'),
+              0x217C78: ('mov', 'w8, #3'),
+              0x218974: ('mov', 'w8, #3'),
+              0x217B4C: ('nop', ''),
+              0x217BF8: ('mov', 'w8, #3'),
+              0x217DD4: ('mov', 'w8, #3'),
           }
+
+          def norm(s):
+              return s.replace('#', '').replace(' ', '').lower()
+
           for rva, (mn, ops) in expected.items():
-              ins = list(md.disasm(out[rva:rva+4], rva)); assert len(ins) == 1
+              ins = list(md.disasm(out[rva:rva+4], rva))
+              assert len(ins) == 1, hex(rva)
               got = (ins[0].mnemonic, ins[0].op_str)
               assert got[0] == mn, (hex(rva), got, (mn, ops))
               if ops:
-                  norm = lambda s: s.replace('#','').lower()
                   assert norm(got[1]) == norm(ops), (hex(rva), got, (mn, ops))
-              print(f'0x{rva:X}: {ins[0].mnemonic} {ins[0].op_str}')
-          assert int.from_bytes(out[0x23C6B8:0x23C6BC], 'little') == 0x5280002A
-          assert int.from_bytes(out[0x23C6CC:0x23C6D0], 'little') == 0x089FFD0A
-          assert int.from_bytes(out[0x217E14:0x217E18], 'little') == 0x5280006A
-          assert int.from_bytes(out[0x217E20:0x217E24], 'little') == 0xB90F370A
-          print('v6 static state-force verification: OK')
+              print(f'0x{rva:X}: {got[0]} {got[1]}')
+
+          # Writers we deliberately preserve must still write the forced values.
+          preserved = {
+              0x23C6B8: ('mov', 'w10, #1'),
+              0x23C6CC: ('stlrb', 'w10, [x8]'),
+              0x217BFC: ('str', 'w8, [x24, #0xf34]'),
+              0x217DDC: ('str', 'w8, [x24, #0xf34]'),
+              0x217E14: ('mov', 'w10, #3'),
+              0x217E20: ('str', 'w10, [x24, #0xf34]'),
+          }
+          for rva, (mn, ops) in preserved.items():
+              ins = list(md.disasm(out[rva:rva+4], rva)); assert len(ins) == 1
+              got = (ins[0].mnemonic, ins[0].op_str)
+              assert got[0] == mn and norm(got[1]) == norm(ops), (hex(rva), got)
+              print(f'preserved 0x{rva:X}: {got[0]} {got[1]}')
+
+          # Byte-wise expected image from manifest, independent of patcher writer loop.
+          expected_image = bytearray(src)
+          for p in report['plan']:
+              rva = int(p['rva'])
+              expected_image[rva:rva+4] = bytes.fromhex(p['new_bytes_le'])
+          assert bytes(expected_image) == out
+
+          print('source_sha256 =', hashlib.sha256(src).hexdigest())
+          print('v7_sha256     =', hashlib.sha256(out).hexdigest())
+          print('manifest image equality: OK')
+          print('v7 full state-force static verification: OK')
           PY
 
-      - name: Upload analysis and v6 candidate
+      - name: Upload v7 candidate
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: autopatch-v7-writer-audit-${{ github.run_id }}-${{ github.run_attempt }}
+          name: autopatch-v7-state-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
+            libmedia_codec_ndk.v7-state.so
+            patch_manifest_v7.json
+            autopatch_v7.log
+            autopatch_v7_verify.log
             v7_caves.txt
             v7_writers.txt
-            libmedia_codec_ndk.v6-state.so
-            patch_manifest_v6.json
-            autopatch_v6.log
-            autopatch_v6_verify.log
-            standalone_v5_report.json
-            standalone_v5.log
           if-no-files-found: warn
           retention-days: 4
