@@ -91,18 +91,16 @@ jobs:
           assert len(src) == len(out)
           assert hashlib.sha256(src).hexdigest() == '5a14855bfdab54000a7724b6935a1191ed654a6b43c2ed514ba54fcc6ae2bb48'
           assert hashlib.sha256(out).hexdigest() == report['sha256_after']
-          assert report['patched_instruction_count'] == 25, report['patched_instruction_count']
+          assert report['patched_instruction_count'] == 27, report['patched_instruction_count']
 
           md = Cs(CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN)
           expected = {
-              # byte setter cave
               0x237ADC: ('b', '0x237af4'),
               0x237AE0: ('adrp', 'x16, #0x36a000'),
               0x237AE4: ('add', 'x16, x16, #0xe84'),
               0x237AE8: ('mov', 'w9, #1'),
               0x237AEC: ('stlrb', 'w9, [x16]'),
               0x237AF0: ('ret', ''),
-              # byte writer/read call sites
               0x217B28: ('bl', '0x237ae0'),
               0x23BDEC: ('bl', '0x237ae0'),
               0x244B54: ('bl', '0x237ae0'),
@@ -112,7 +110,6 @@ jobs:
               0x218EA8: ('mov', 'w9, #1'),
               0x21A088: ('mov', 'w8, #1'),
               0x240C50: ('mov', 'w8, #1'),
-              # dword setter cave
               0x23E8DC: ('b', '0x23e8f4'),
               0x23E8E0: ('adrp', 'x16, #0x36a000'),
               0x23E8E4: ('add', 'x16, x16, #0xf34'),
@@ -139,7 +136,6 @@ jobs:
                   assert norm(got[1]) == norm(ops), (hex(rva), got, (mn, ops))
               print(f'0x{rva:X}: {got[0]} {got[1]}')
 
-          # Writers we deliberately preserve must still write the forced values.
           preserved = {
               0x23C6B8: ('mov', 'w10, #1'),
               0x23C6CC: ('stlrb', 'w10, [x8]'),
@@ -154,7 +150,6 @@ jobs:
               assert got[0] == mn and norm(got[1]) == norm(ops), (hex(rva), got)
               print(f'preserved 0x{rva:X}: {got[0]} {got[1]}')
 
-          # Byte-wise expected image from manifest, independent of patcher writer loop.
           expected_image = bytearray(src)
           for p in report['plan']:
               rva = int(p['rva'])
