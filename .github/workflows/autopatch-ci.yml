@@ -22,7 +22,6 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
-
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
@@ -30,127 +29,92 @@ jobs:
       - name: Install dependencies
         run: python -m pip install --disable-pip-version-check pyelftools capstone
 
-      - name: Reconstruct v4 exactly
+      - name: Reconstruct exact v4 and standalone v5
         shell: bash
         run: |
           set -euo pipefail
           cat autopatch/v4.b64.part* | tr -d '\n\r' | base64 -d > /tmp/mobile_autopatch_v4.py
           echo '5ac67939d12c28b17cae440422867102972391efa98b3323fa9de07e93ad8d88  /tmp/mobile_autopatch_v4.py' | sha256sum --check
-          python -m py_compile /tmp/mobile_autopatch_v4.py
-          python -m py_compile autopatch/autopatch_v5_apply.py
+          cp /tmp/mobile_autopatch_v4.py /tmp/mobile_autopatch_v5.py
+          patch /tmp/mobile_autopatch_v5.py < autopatch/v4_to_v5.patch
+          echo '68e6cd6ddade4ba22e7b3a7e486aca7efee9fe6a2b8a7aa4af1de130d29ee6b6  /tmp/mobile_autopatch_v5.py' | sha256sum --check
+          python -m py_compile /tmp/mobile_autopatch_v4.py /tmp/mobile_autopatch_v5.py autopatch/autopatch_v5_apply.py
 
       - name: Verify target library
         shell: bash
         run: |
           set -euo pipefail
-          test -f input/libmedia_codec_ndk.so
           echo '5a14855bfdab54000a7724b6935a1191ed654a6b43c2ed514ba54fcc6ae2bb48  input/libmedia_codec_ndk.so' | sha256sum --check
           file input/libmedia_codec_ndk.so
 
-      - name: Run v4 resolver
-        shell: bash
-        run: |
-          set -euo pipefail
-          python /tmp/mobile_autopatch_v4.py \
-            input/libmedia_codec_ndk.so \
-            byte_36AE84=1 \
-            dword_36AF34=3 \
-            --window 96 \
-            --context 1 \
-            --json-report xrefs_v4.json \
-            | tee autopatch_v4.log
-
-      - name: Run v5 patch writer
+      - name: Run tested v5 driver
         shell: bash
         run: |
           set -euo pipefail
           python autopatch/autopatch_v5_apply.py \
             input/libmedia_codec_ndk.so \
-            byte_36AE84=1 \
-            dword_36AF34=3 \
-            --core /tmp/mobile_autopatch_v4.py \
-            --window 96 \
-            -o libmedia_codec_ndk.patched.so \
-            --manifest patch_manifest_v5.json \
-            | tee autopatch_v5.log
-          file libmedia_codec_ndk.patched.so
-          readelf -h libmedia_codec_ndk.patched.so >/dev/null
+            byte_36AE84=1 dword_36AF34=3 \
+            --core /tmp/mobile_autopatch_v4.py --window 96 \
+            -o libmedia_codec_ndk.driver.patched.so \
+            --manifest patch_manifest_v5_driver.json \
+            | tee autopatch_v5_driver.log
 
-      - name: Independently verify v5 bytes and disassembly
+      - name: Run standalone v5
         shell: bash
         run: |
           set -euo pipefail
-          python - <<'PY' | tee autopatch_v5_verify.log
+          python /tmp/mobile_autopatch_v5.py \
+            input/libmedia_codec_ndk.so \
+            byte_36AE84=1 dword_36AF34=3 \
+            --window 96 --context 0 --apply \
+            -o libmedia_codec_ndk.patched.so \
+            --json-report standalone_v5_report.json \
+            | tee standalone_v5.log
+          file libmedia_codec_ndk.patched.so
+          readelf -h libmedia_codec_ndk.patched.so >/dev/null
+
+      - name: Independently verify standalone output
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmp libmedia_codec_ndk.driver.patched.so libmedia_codec_ndk.patched.so
+          echo 'dfbdc949dfbaeda4d3095d15f34663d7b0fa6a10eb69a1cf4ef3133106192732  libmedia_codec_ndk.patched.so' | sha256sum --check
+          python - <<'PY' | tee standalone_v5_verify.log
           import json
           from pathlib import Path
           from capstone import Cs, CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN
-
           src = Path('input/libmedia_codec_ndk.so').read_bytes()
           out = Path('libmedia_codec_ndk.patched.so').read_bytes()
-          m = json.loads(Path('patch_manifest_v5.json').read_text())
-          plans = m['applied_patch_plan']
-          assert len(src) == len(out)
+          r = json.loads(Path('standalone_v5_report.json').read_text())
+          plans = [p for t in r['targets'] for p in t.get('read_force_patch_plan', [])]
+          assert r['apply']['patched_instruction_count'] == 9
+          assert len(plans) == 9
           expected = bytearray(src)
           md = Cs(CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN)
-          print('patches:', len(plans))
           for p in plans:
               off = int(p['instruction_file_offset'])
               rva = int(p['instruction_rva'])
               repl = bytes.fromhex(p['replacement_bytes_le'])
               expected[off:off+4] = repl
               ins = list(md.disasm(out[off:off+4], rva))
-              assert len(ins) == 1, (hex(rva), ins)
-              text = f'{ins[0].mnemonic} {ins[0].op_str}'.strip()
-              assert ins[0].mnemonic == 'mov', (hex(rva), text)
-              print(f'0x{rva:X}: {p["original_word"]} -> {p["replacement_word"]}  {text}')
-          assert bytes(expected) == out, 'patched output differs outside the exact patch plan'
+              assert len(ins) == 1 and ins[0].mnemonic == 'mov'
+              print(f"0x{rva:X}: {ins[0].mnemonic} {ins[0].op_str}")
+          assert bytes(expected) == out
+          assert r['apply']['sha256_before'] == '5a14855bfdab54000a7724b6935a1191ed654a6b43c2ed514ba54fcc6ae2bb48'
+          assert r['apply']['sha256_after'] == 'dfbdc949dfbaeda4d3095d15f34663d7b0fa6a10eb69a1cf4ef3133106192732'
+          print('standalone == driver: OK')
           print('byte-for-byte expected image: OK')
-          print('all replacements disassemble as MOV: OK')
           PY
 
-      - name: Summarize results
-        if: always()
-        shell: bash
-        run: |
-          python - <<'PY' | tee autopatch_summary.txt
-          import json
-          from pathlib import Path
-          for fn in ('xrefs_v4.json', 'patch_manifest_v5.json'):
-              p = Path(fn)
-              if not p.exists():
-                  print(fn, 'missing')
-                  continue
-              data = json.loads(p.read_text())
-              print(fn)
-              print('  before:', data.get('sha256') or data.get('sha256_before'))
-              print('  after :', data.get('sha256_after'))
-              for t in data.get('targets', []):
-                  if 'spec' in t:
-                      xs = t.get('xrefs', [])
-                      print(f"  {t['spec']['name']}: xrefs={len(xs)} plan={len(t.get('read_force_patch_plan', []))}")
-                  else:
-                      print(f"  {t['target']}: xrefs={t['exact_xrefs']} reads={t['exact_reads']} writes={t['exact_writes']} plan={len(t['plan'])}")
-          PY
-          {
-            echo '## Autopatch CI'
-            echo '```text'
-            cat autopatch_summary.txt
-            [[ -f autopatch_v5_verify.log ]] && cat autopatch_v5_verify.log
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload autopatch results
+      - name: Upload final candidate
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: autopatch-results-${{ github.run_id }}-${{ github.run_attempt }}
+          name: autopatch-standalone-v5-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            xrefs_v4.json
-            patch_manifest_v5.json
             libmedia_codec_ndk.patched.so
-            autopatch_v4.log
-            autopatch_v5.log
-            autopatch_v5_verify.log
-            autopatch_summary.txt
+            standalone_v5_report.json
+            standalone_v5.log
+            standalone_v5_verify.log
           if-no-files-found: warn
           retention-days: 4
