@@ -38,7 +38,7 @@ jobs:
           cp /tmp/mobile_autopatch_v4.py /tmp/mobile_autopatch_v5.py
           patch /tmp/mobile_autopatch_v5.py < autopatch/v4_to_v5.patch
           echo '68e6cd6ddade4ba22e7b3a7e486aca7efee9fe6a2b8a7aa4af1de130d29ee6b6  /tmp/mobile_autopatch_v5.py' | sha256sum --check
-          python -m py_compile /tmp/mobile_autopatch_v4.py /tmp/mobile_autopatch_v5.py autopatch/autopatch_v5_apply.py
+          python -m py_compile /tmp/mobile_autopatch_v4.py /tmp/mobile_autopatch_v5.py autopatch/autopatch_v5_apply.py autopatch/autopatch_v6_state_exact.py
 
       - name: Verify target library
         shell: bash
@@ -47,19 +47,7 @@ jobs:
           echo '5a14855bfdab54000a7724b6935a1191ed654a6b43c2ed514ba54fcc6ae2bb48  input/libmedia_codec_ndk.so' | sha256sum --check
           file input/libmedia_codec_ndk.so
 
-      - name: Run tested v5 driver
-        shell: bash
-        run: |
-          set -euo pipefail
-          python autopatch/autopatch_v5_apply.py \
-            input/libmedia_codec_ndk.so \
-            byte_36AE84=1 dword_36AF34=3 \
-            --core /tmp/mobile_autopatch_v4.py --window 96 \
-            -o libmedia_codec_ndk.driver.patched.so \
-            --manifest patch_manifest_v5_driver.json \
-            | tee autopatch_v5_driver.log
-
-      - name: Run standalone v5
+      - name: Run standalone v5 regression
         shell: bash
         run: |
           set -euo pipefail
@@ -67,54 +55,82 @@ jobs:
             input/libmedia_codec_ndk.so \
             byte_36AE84=1 dword_36AF34=3 \
             --window 96 --context 0 --apply \
-            -o libmedia_codec_ndk.patched.so \
+            -o libmedia_codec_ndk.v5-regression.so \
             --json-report standalone_v5_report.json \
             | tee standalone_v5.log
-          file libmedia_codec_ndk.patched.so
-          readelf -h libmedia_codec_ndk.patched.so >/dev/null
+          echo 'dfbdc949dfbaeda4d3095d15f34663d7b0fa6a10eb69a1cf4ef3133106192732  libmedia_codec_ndk.v5-regression.so' | sha256sum --check
 
-      - name: Independently verify standalone output
+      - name: Run v6 real-memory state force
         shell: bash
         run: |
           set -euo pipefail
-          cmp libmedia_codec_ndk.driver.patched.so libmedia_codec_ndk.patched.so
-          echo 'dfbdc949dfbaeda4d3095d15f34663d7b0fa6a10eb69a1cf4ef3133106192732  libmedia_codec_ndk.patched.so' | sha256sum --check
-          python - <<'PY' | tee standalone_v5_verify.log
-          import json
+          python autopatch/autopatch_v6_state_exact.py \
+            input/libmedia_codec_ndk.so \
+            -o libmedia_codec_ndk.v6-state.so \
+            --manifest patch_manifest_v6.json \
+            | tee autopatch_v6.log
+          file libmedia_codec_ndk.v6-state.so
+          readelf -h libmedia_codec_ndk.v6-state.so >/dev/null
+          echo '30d9ce817b8abe6d2d4ffd8f253322214da5124f7cb5d732cc1f7ea699993691  libmedia_codec_ndk.v6-state.so' | sha256sum --check
+
+      - name: Independently verify v6 control flow and stores
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY' | tee autopatch_v6_verify.log
           from pathlib import Path
           from capstone import Cs, CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN
           src = Path('input/libmedia_codec_ndk.so').read_bytes()
-          out = Path('libmedia_codec_ndk.patched.so').read_bytes()
-          r = json.loads(Path('standalone_v5_report.json').read_text())
-          plans = [p for t in r['targets'] for p in t.get('read_force_patch_plan', [])]
-          assert r['apply']['patched_instruction_count'] == 9
-          assert len(plans) == 9
-          expected = bytearray(src)
+          out = Path('libmedia_codec_ndk.v6-state.so').read_bytes()
+          assert len(src) == len(out)
           md = Cs(CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN)
-          for p in plans:
-              off = int(p['instruction_file_offset'])
-              rva = int(p['instruction_rva'])
-              repl = bytes.fromhex(p['replacement_bytes_le'])
-              expected[off:off+4] = repl
-              ins = list(md.disasm(out[off:off+4], rva))
-              assert len(ins) == 1 and ins[0].mnemonic == 'mov'
-              print(f"0x{rva:X}: {ins[0].mnemonic} {ins[0].op_str}")
-          assert bytes(expected) == out
-          assert r['apply']['sha256_before'] == '5a14855bfdab54000a7724b6935a1191ed654a6b43c2ed514ba54fcc6ae2bb48'
-          assert r['apply']['sha256_after'] == 'dfbdc949dfbaeda4d3095d15f34663d7b0fa6a10eb69a1cf4ef3133106192732'
-          print('standalone == driver: OK')
-          print('byte-for-byte expected image: OK')
+          expected = {
+              0x217B28: ('b', '0x237ae0'),
+              0x217B4C: ('nop', ''),
+              0x217BE0: ('b', '0x23e8e0'),
+              0x217BF8: ('mov', 'w8, #3'),
+              0x217DD4: ('mov', 'w8, #3'),
+              0x23BDEC: ('nop', ''),
+              0x244B54: ('nop', ''),
+              0x237ADC: ('b', '0x237af4'),
+              0x237AE0: ('mov', 'w9, #1'),
+              0x237AE4: ('stlrb', 'w9, [x29]'),
+              0x237AE8: ('b', '0x217b2c'),
+              0x23E8DC: ('b', '0x23e8f4'),
+              0x23E8E0: ('mov', 'w8, #3'),
+              0x23E8E4: ('str', 'w8, [x24, #0xf34]'),
+              0x23E8E8: ('b', '0x217be4'),
+          }
+          for rva, (mn, ops) in expected.items():
+              ins = list(md.disasm(out[rva:rva+4], rva))
+              assert len(ins) == 1
+              got = (ins[0].mnemonic, ins[0].op_str)
+              assert got[0] == mn, (hex(rva), got, (mn, ops))
+              if ops:
+                  assert got[1].replace('0x0','0x') == ops or got[1] == ops, (hex(rva), got, (mn, ops))
+              print(f'0x{rva:X}: {ins[0].mnemonic} {ins[0].op_str}')
+
+          # Legitimate setters that already write desired values must remain untouched.
+          assert int.from_bytes(out[0x23C6B8:0x23C6BC], 'little') == 0x5280002A
+          assert int.from_bytes(out[0x23C6CC:0x23C6D0], 'little') == 0x089FFD0A
+          assert int.from_bytes(out[0x217E14:0x217E18], 'little') == 0x5280006A
+          assert int.from_bytes(out[0x217E20:0x217E24], 'little') == 0xB90F370A
+          print('byte real-memory setter preserved: MOV W10,#1 + STLRB W10,[X8]')
+          print('dword final setter preserved: MOV W10,#3 + STR W10,[X24,#0xF34]')
+          print('v6 static state-force verification: OK')
           PY
 
-      - name: Upload final candidate
+      - name: Upload v6 candidate
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: autopatch-standalone-v5-${{ github.run_id }}-${{ github.run_attempt }}
+          name: autopatch-v6-state-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            libmedia_codec_ndk.patched.so
+            libmedia_codec_ndk.v6-state.so
+            patch_manifest_v6.json
+            autopatch_v6.log
+            autopatch_v6_verify.log
             standalone_v5_report.json
             standalone_v5.log
-            standalone_v5_verify.log
           if-no-files-found: warn
           retention-days: 4
