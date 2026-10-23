@@ -8,9 +8,19 @@ GHIDRA_HOME="$1"; PROJECT_DIR="$2"; PROJECT_NAME="$3"; IMPORT="$4"; OUT="$5"
 REPO_ROOT="${GITHUB_WORKSPACE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 PROGRAM_NAME="$(basename "$IMPORT")"
 mkdir -p "$PROJECT_DIR" "$OUT"
+TIMINGS="$OUT/stage_times.tsv"
+printf 'stage\tseconds\trc\n' > "$TIMINGS"
+stage() {
+  local name="$1"; shift
+  local t0; t0=$(date +%s)
+  local rc=0
+  "$@" || rc=$?
+  printf '%s\t%s\t%s\n' "$name" "$(( $(date +%s) - t0 ))" "$rc" >> "$TIMINGS"
+  return $rc
+}
 
 echo "[v5.6] inventory + login/network seed discovery"
-"$GHIDRA_HOME/support/analyzeHeadless" "$PROJECT_DIR" "$PROJECT_NAME" -import "$IMPORT" -scriptPath "$REPO_ROOT/ghidra_scripts" -analysisTimeoutPerFile 2400 \
+stage ghidra_inventory "$GHIDRA_HOME/support/analyzeHeadless" "$PROJECT_DIR" "$PROJECT_NAME" -import "$IMPORT" -scriptPath "$REPO_ROOT/ghidra_scripts" -analysisTimeoutPerFile 2400 \
   -postScript ExportAnalysis.java "$OUT" 0 90 1 -postScript ExportV51Refs.java "$OUT" -postScript ExportV56LoginSeeds.java "$OUT" > "$OUT/ghidra_inventory.log" 2>&1
 test -s "$OUT/functions.csv"; test -s "$OUT/v51_function_refs.csv"; test -s "$OUT/v56_login_seeds.csv"
 
@@ -26,7 +36,7 @@ cp "$OUT/v52_selected_functions.csv" "$OUT/v51_selected_functions.csv"; cp "$OUT
 echo "[v5.6] selective deep export + protected preservation"
 # High-P-code fallback may temporarily remove original functions. Keep this invocation read-only so
 # every structural mutation is discarded before the dedicated Region-C invocation starts.
-"$GHIDRA_HOME/support/analyzeHeadless" "$PROJECT_DIR" "$PROJECT_NAME" -process "$PROGRAM_NAME" -readOnly -noanalysis -scriptPath "$REPO_ROOT/ghidra_scripts" \
+stage ghidra_selected "$GHIDRA_HOME/support/analyzeHeadless" "$PROJECT_DIR" "$PROJECT_NAME" -process "$PROGRAM_NAME" -readOnly -noanalysis -scriptPath "$REPO_ROOT/ghidra_scripts" \
   -postScript ExportV4Selected.java "$OUT" "$OUT/v52_selected_functions.csv" 1800 20 \
   -postScript ExportV51RawPcode.java "$OUT" "$OUT/v52_selected_functions.csv" 420 40000 120000 6000000 \
   -postScript ExportV51HighPcode.java "$OUT" "$OUT/v52_selected_functions.csv" 220 25 80000 2500000 > "$OUT/ghidra_selected.log" 2>&1
@@ -35,7 +45,7 @@ test -s "$OUT/v4_selected_export.csv"; test -s "$OUT/v51_raw_pcode.csv"; test -s
 echo "[v5.6] selected exhaustive Region-C fallback on pristine function map"
 # Run Region-C separately so its originalBody/function lookups are based on the pristine analyzed program,
 # not on temporary function removals performed by ExportV51HighPcode in the previous invocation.
-"$GHIDRA_HOME/support/analyzeHeadless" "$PROJECT_DIR" "$PROJECT_NAME" -process "$PROGRAM_NAME" -readOnly -noanalysis -scriptPath "$REPO_ROOT/ghidra_scripts" \
+stage ghidra_region_c "$GHIDRA_HOME/support/analyzeHeadless" "$PROJECT_DIR" "$PROJECT_NAME" -process "$PROGRAM_NAME" -readOnly -noanalysis -scriptPath "$REPO_ROOT/ghidra_scripts" \
   -postScript ExportV56RegionC.java "$OUT" "$OUT/v52_selected_functions.csv" 20 20000 > "$OUT/ghidra_selected_region_c.log" 2>&1
 test -s "$OUT/v56_region_c_index.csv"
 
@@ -44,7 +54,7 @@ python "$REPO_ROOT/tools/v56_c_coverage_validate.py" "$OUT" > "$OUT/v56_c_covera
 test -s "$OUT/v56_c_coverage_acceptance.json"
 
 echo "[v5.6] All-C pass: every internal function, then exhaustive fallback only for whole-C failures"
-"$GHIDRA_HOME/support/analyzeHeadless" "$PROJECT_DIR" "$PROJECT_NAME" -process "$PROGRAM_NAME" -noanalysis -scriptPath "$REPO_ROOT/ghidra_scripts" \
+stage ghidra_all_c "$GHIDRA_HOME/support/analyzeHeadless" "$PROJECT_DIR" "$PROJECT_NAME" -process "$PROGRAM_NAME" -noanalysis -scriptPath "$REPO_ROOT/ghidra_scripts" \
   -postScript ExportV56AllC.java "$OUT" 6 \
   -postScript ExportV56RegionC.java "$OUT" "$OUT/v56_all_c_fallback.csv" 20 20000 \
   -deleteProject > "$OUT/ghidra_all_c.log" 2>&1
@@ -85,4 +95,6 @@ python "$REPO_ROOT/tools/v55_validate.py" "$OUT" > "$OUT/v55_validate.log"
 for f in v54_protected_manifest.json v55_region_high_pcode_acceptance.md v55_region_high_pcode_merge.json v55_region_map.csv v55_reconstruction_summary.csv v55_cfg_report.md v55_native_data_report.md v55_complete_views_report.md v55_complete_views_stats.json v55_semantic_c_report.md v55_semantic_c_stats.json v55_semantic_string_recovery.csv v55_semantic_quality_v2.json v55_semantic_quality_v2.md v55_semantic_acceptance.md v55_acceptance.md v56_c_coverage_acceptance.json v56_c_coverage_acceptance.md v56_all_c_acceptance.json v56_all_c_acceptance.md; do test -s "$OUT/$f"; done
 for f in START_HERE.html V55_RECONSTRUCTION.html V55_SEMANTIC_C.html SEMANTIC_C_INDEX.csv V55_CFG.html V55_NATIVE_DATA.html OFFSET_LOOKUP.html OFFSET_MAP.txt FUNCTIONS_C.html FUNCTION_C_INDEX.csv ida/import_mobile_ghidra.py reconstructed_c_v56/V56_C_RECONSTRUCTION.md; do test -s "$OUT/human/$f"; done
 
+echo "[v5.6] stage timings:"
+cat "$TIMINGS"
 echo "[v5.6] pipeline complete"
