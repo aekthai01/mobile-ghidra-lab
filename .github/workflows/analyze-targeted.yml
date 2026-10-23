@@ -3,6 +3,11 @@ name: Analyze native library (targeted)
 # Fast path for big libraries: one Ghidra import, decompile only the functions you list.
 # Typical use: a 100MB+ .so where the full V5.6 all-function pass costs hours.
 on:
+  push:
+    paths:
+      - 'ghidra_scripts/ExportTargeted.java'
+      - 'tools/run_targeted.sh'
+      - '.github/workflows/analyze-targeted.yml'
   workflow_dispatch:
     inputs:
       target:

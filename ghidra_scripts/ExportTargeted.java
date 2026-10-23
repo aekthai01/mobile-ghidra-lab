@@ -199,7 +199,10 @@ public class ExportTargeted extends GhidraScript {
     }
 
     private Function byName(String name) {
-        for (Function f : currentProgram.getFunctionManager().getFunctions(true)) {
+        ghidra.program.model.listing.FunctionIterator it =
+                currentProgram.getFunctionManager().getFunctions(true);
+        while (it.hasNext()) {
+            Function f = it.next();
             if (name.equals(f.getName())) return f;
         }
         return null;
@@ -207,7 +210,10 @@ public class ExportTargeted extends GhidraScript {
 
     private Function byRegex(String pattern) {
         java.util.regex.Pattern p = java.util.regex.Pattern.compile(pattern);
-        for (Function f : currentProgram.getFunctionManager().getFunctions(true)) {
+        ghidra.program.model.listing.FunctionIterator it =
+                currentProgram.getFunctionManager().getFunctions(true);
+        while (it.hasNext()) {
+            Function f = it.next();
             if (p.matcher(f.getName()).find()) return f;
         }
         return null;
